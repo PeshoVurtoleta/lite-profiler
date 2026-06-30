@@ -4,6 +4,7 @@
 [![sponsor](https://img.shields.io/badge/sponsor-PeshoVurtoleta-ea4aaa.svg?logo=github)](https://github.com/sponsors/PeshoVurtoleta)
 [![npm bundle size](https://img.shields.io/bundlephobia/minzip/@zakkster/lite-profiler?style=for-the-badge)](https://bundlephobia.com/result?p=@zakkster/lite-profiler)
 [![npm downloads](https://img.shields.io/npm/dm/@zakkster/lite-profiler?style=for-the-badge&color=blue)](https://www.npmjs.com/package/@zakkster/lite-profiler)
+[![npm total downloads](https://img.shields.io/npm/dt/@zakkster/lite-profiler?style=for-the-badge&color=blue)](https://www.npmjs.com/package/@zakkster/lite-profiler)
 ![Zero-GC](https://img.shields.io/badge/Hot_Path-Zero_GC-brightgreen?style=for-the-badge)
 ![TypeScript](https://img.shields.io/badge/TypeScript-Full_Types-informational?style=for-the-badge)
 ![Tests](https://img.shields.io/badge/Tests-25_passing-brightgreen?style=for-the-badge)
