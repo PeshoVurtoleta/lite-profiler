@@ -1,0 +1,34 @@
+# @zakkster/lite-profiler
+
+Zero-GC frame and per-phase profiler for JavaScript game loops. Engine-agnostic
+core; reactive and GPU layers ship separately.
+
+## Mental model
+- Capture is imperative and allocation-free. The hot path only pushes
+  performance.now() deltas into pre-allocated Float32Array ring buffers.
+- Analysis (percentiles, histogram, capture export) and rendering happen off
+  the hot path, reading from those buffers.
+
+## Exports
+- Profiler(capacity=1024, phases=[]) - beginFrame()/endFrame(),
+  begin(tag)/end(tag), beginAt(handle)/endAt(handle), handle(tag), frame,
+  phase(tag), phaseAt(handle), reset(), destroy().
+- FrameHistogram - update(buffer), bins, total, modeIndex, jankRatio,
+  spikeRatio, classify() -> FrameClass.{STEADY,SPIKING,THROTTLED}.
+- encodeCapture(profiler, scratch?) -> ArrayBuffer|null,
+  decodeCapture(arrayBufferOrView) -> {version,count,numPhases,frames,phases},
+  downloadCapture(buffer, filename?), LITECAP constants.
+- FrameBudget, budgetMs(targetFps), isOverBudget(frameMs, targetFps).
+- MeterHud(canvas, profiler, options?) - render(), resize(), setMaxMs(),
+  destroy().
+
+## Contracts
+- Phases are registered once at construction; dynamic registration is not
+  supported (it would allocate).
+- begin/end (or beginAt/endAt) must be paired each frame; every registered
+  phase must be reported every frame for encodeCapture() to succeed.
+- Buffers store Float32; push only finite numbers.
+
+## Dependencies
+@zakkster/lite-ring-buffer, @zakkster/lite-stats-math (analysis),
+@zakkster/lite-canvas-graph (MeterHud). All zero-runtime-dep siblings.
