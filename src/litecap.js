@@ -8,18 +8,22 @@
  *
  * Byte layout (little-endian):
  *   off 0  : magic    4 x uint8  = 'L','C','A','P'
- *   off 4  : version  1 x uint8  = 1
+ *   off 4  : version  1 x uint8  = 1 or 2
  *   off 5  : count    1 x uint32 = samples per buffer
  *   off 9  : phases   1 x uint8  = number of phase buffers
  *   off 10 : frames   count x float32          (oldest-first)
  *   ...    : phase p  count x float32 each      (oldest-first), p = 0..phases-1
+ *   v2 trailer (only when version = 2):
+ *     tags   : per phase, uint8 len + len UTF-8 bytes  (registration order)
+ *     meta   : uint32 len + len UTF-8 bytes (JSON; len 0 = none)
  *
  * Copyright (c) Zahary Shinikchiev <shinikchiev@yahoo.com>
  * MIT License.
  */
 
 const MAGIC0 = 0x4C, MAGIC1 = 0x43, MAGIC2 = 0x41, MAGIC3 = 0x50; // 'LCAP'
-const VERSION = 1;
+const VERSION = 2;            // current emit version
+const MIN_VERSION = 1;        // v1 still decodes
 const OFF_VERSION = 4;
 const OFF_COUNT = 5;
 const OFF_NUM_PHASES = 9;
@@ -37,12 +41,14 @@ export const LITECAP = Object.freeze({
 });
 
 /**
- * Serialize a profiler's buffers into a binary capture.
+ * Serialize a profiler's buffers into a binary capture (v2: includes phase tags
+ * and optional metadata, making the capture self-describing).
  * @param {import('./profiler.js').Profiler} profiler
  * @param {Float32Array} [scratch] optional reusable scratchpad (length >= count) to avoid allocation
+ * @param {object|null} [meta] optional JSON-serializable metadata (e.g. { engine, label, budgetMs })
  * @returns {ArrayBuffer|null} null when no frames have been captured
  */
-export function encodeCapture(profiler, scratch = null) {
+export function encodeCapture(profiler, scratch = null, meta = null) {
     const frame = profiler.frame;
     const count = frame.count;
     if (count === 0) return null;
@@ -64,9 +70,25 @@ export function encodeCapture(profiler, scratch = null) {
         }
     }
 
-    const byteLength = HEADER_SIZE + (count * 4) + (numPhases * count * 4);
+    // v2 trailer sizing: phase tags then a uint32-prefixed meta JSON blob.
+    const enc = new TextEncoder();
+    const tagBytes = new Array(numPhases);
+    let tagsTotal = 0;
+    for (let p = 0; p < numPhases; p++) {
+        const b = enc.encode(profiler.phaseTags[p]);
+        if (b.length > 255) {
+            throw new RangeError(`encodeCapture: phase tag too long (${b.length} bytes > 255)`);
+        }
+        tagBytes[p] = b;
+        tagsTotal += 1 + b.length;
+    }
+    const metaBytes = meta != null ? enc.encode(JSON.stringify(meta)) : new Uint8Array(0);
+    const metaTotal = 4 + metaBytes.length;
+
+    const byteLength = HEADER_SIZE + (count * 4) + (numPhases * count * 4) + tagsTotal + metaTotal;
     const buffer = new ArrayBuffer(byteLength);
     const view = new DataView(buffer);
+    const u8 = new Uint8Array(buffer);
 
     view.setUint8(0, MAGIC0);
     view.setUint8(1, MAGIC1);
@@ -86,6 +108,14 @@ export function encodeCapture(profiler, scratch = null) {
         profiler.phaseAt(p).copyTo(pad, 0);
         for (let i = 0; i < count; i++) { view.setFloat32(offset, pad[i], true); offset += 4; }
     }
+
+    for (let p = 0; p < numPhases; p++) {
+        const b = tagBytes[p];
+        view.setUint8(offset, b.length); offset += 1;
+        u8.set(b, offset); offset += b.length;
+    }
+    view.setUint32(offset, metaBytes.length, true); offset += 4;
+    u8.set(metaBytes, offset); offset += metaBytes.length;
 
     return buffer;
 }
@@ -116,8 +146,8 @@ export function decodeCapture(input) {
     }
 
     const version = view.getUint8(OFF_VERSION);
-    if (version !== VERSION) {
-        throw new Error(`decodeCapture: unsupported version ${version} (expected ${VERSION})`);
+    if (version < MIN_VERSION || version > VERSION) {
+        throw new Error(`decodeCapture: unsupported version ${version} (supported ${MIN_VERSION}..${VERSION})`);
     }
 
     const count = view.getUint32(OFF_COUNT, true);
@@ -141,7 +171,29 @@ export function decodeCapture(input) {
         phases[p] = arr;
     }
 
-    return { version, count, numPhases, frames, phases };
+    let tags = [];
+    let meta = null;
+    if (version >= 2) {
+        const dec = new TextDecoder();
+        tags = new Array(numPhases);
+        for (let p = 0; p < numPhases; p++) {
+            if (offset + 1 > byteLength) throw new RangeError('decodeCapture: truncated tag table');
+            const len = view.getUint8(offset); offset += 1;
+            if (offset + len > byteLength) throw new RangeError('decodeCapture: truncated tag bytes');
+            tags[p] = dec.decode(new Uint8Array(buffer, byteOffset + offset, len));
+            offset += len;
+        }
+        if (offset + 4 > byteLength) throw new RangeError('decodeCapture: truncated meta length');
+        const metaLen = view.getUint32(offset, true); offset += 4;
+        if (offset + metaLen > byteLength) throw new RangeError('decodeCapture: truncated meta bytes');
+        if (metaLen > 0) {
+            const json = dec.decode(new Uint8Array(buffer, byteOffset + offset, metaLen));
+            offset += metaLen;
+            try { meta = JSON.parse(json); } catch { meta = null; }
+        }
+    }
+
+    return { version, count, numPhases, frames, phases, tags, meta };
 }
 
 /**

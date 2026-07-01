@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>lite-profiler // capture vs baseline</title>
+
+    <script type="importmap">
+{
+  "imports": {
+    "@zakkster/lite-profiler": "../index.js",
+    "@zakkster/lite-ring-buffer": "../node_modules/@zakkster/lite-ring-buffer/RingBuffer.js",
+    "@zakkster/lite-stats-math": "../node_modules/@zakkster/lite-stats-math/StatsMath.js",
+    "@zakkster/lite-canvas-graph": "../node_modules/@zakkster/lite-canvas-graph/CanvasGraph.js"
+  }
+}
+
+    </script>
+
+    <style>
+        :root {
+            --bg: #060d0a;
+            --bg: oklch(0.16 0.02 165);
+            --panel: #0a1712;
+            --panel: oklch(0.21 0.025 165);
+            --edge: #11271d;
+            --edge: oklch(0.30 0.04 165);
+            --phosphor: #00ffc6;
+            --phosphor: oklch(0.86 0.16 168);
+            --phosphor-dim: #1f7d63;
+            --phosphor-dim: oklch(0.56 0.09 168);
+            --ink: #bfe9dc;
+            --ink: oklch(0.88 0.05 168);
+            --muted: #5d8579;
+            --muted: oklch(0.62 0.04 168);
+            --amber: #ffb300;
+            --amber: oklch(0.82 0.16 80);
+            --red: #ff4d4d;
+            --red: oklch(0.68 0.20 25);
+            --grid: rgba(0, 255, 198, 0.06);
+            --radius: 0.5rem;
+            --gap: 0.75rem;
+            font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html, body {
+            height: 100%;
+            margin: 0;
+        }
+
+        body {
+            background-color: var(--bg);
+            background-image: repeating-linear-gradient(0deg, var(--grid) 0, var(--grid) 1px, transparent 1px, transparent 2.5rem),
+            repeating-linear-gradient(90deg, var(--grid) 0, var(--grid) 1px, transparent 1px, transparent 2.5rem);
+            color: var(--ink);
+            font-size: 14px;
+            line-height: 1.4;
+        }
+
+        .app {
+            display: grid;
+            grid-template-rows: auto 1fr auto;
+            gap: var(--gap);
+            height: 100%;
+            padding: var(--gap);
+            max-width: 1500px;
+            margin: 0 auto;
+        }
+
+        header {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 1rem;
+            border-bottom: 1px solid var(--edge);
+            padding-bottom: 0.5rem;
+        }
+
+        header h1 {
+            font-size: 1rem;
+            font-weight: 600;
+            letter-spacing: 0.08em;
+            margin: 0;
+            color: var(--phosphor);
+            text-shadow: 0 0 8px var(--phosphor-dim);
+        }
+
+        header h1 span {
+            color: var(--muted);
+            text-shadow: none;
+        }
+
+        .run {
+            font-size: 0.75rem;
+            letter-spacing: 0.12em;
+            padding: 0.15rem 0.6rem;
+            border: 1px solid var(--edge);
+            border-radius: 999px;
+            color: var(--muted);
+        }
+
+        .run[data-run="running"] {
+            color: var(--phosphor);
+            border-color: var(--phosphor-dim);
+        }
+
+        .run[data-run="paused"] {
+            color: var(--muted);
+        }
+
+        main {
+            display: grid;
+            grid-template-columns: 1fr 24rem;
+            gap: var(--gap);
+            min-height: 0;
+        }
+
+        .stage {
+            position: relative;
+            background: #040a08;
+            border: 1px solid var(--edge);
+            border-radius: var(--radius);
+            overflow: hidden;
+            min-height: 0;
+        }
+
+        #scope {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        .stage .tag {
+            position: absolute;
+            top: 0.5rem;
+            left: 0.6rem;
+            font-size: 0.7rem;
+            letter-spacing: 0.14em;
+            color: var(--phosphor-dim);
+            pointer-events: none;
+        }
+
+        .legend {
+            position: absolute;
+            top: 0.5rem;
+            right: 0.6rem;
+            display: flex;
+            gap: 0.9rem;
+            font-size: 0.62rem;
+            letter-spacing: 0.08em;
+            color: var(--muted);
+            pointer-events: none;
+        }
+
+        .legend i {
+            display: inline-block;
+            width: 0.8rem;
+            height: 0.14rem;
+            margin-right: 0.3rem;
+            vertical-align: middle;
+        }
+
+        .legend .live i {
+            background: var(--phosphor);
+        }
+
+        .legend .base i {
+            background: var(--muted);
+        }
+
+        .legend .budget i {
+            background: var(--amber);
+        }
+
+        .side {
+            display: flex;
+            flex-direction: column;
+            gap: var(--gap);
+            min-height: 0;
+            overflow: auto;
+        }
+
+        .panel {
+            background: var(--panel);
+            border: 1px solid var(--edge);
+            border-radius: var(--radius);
+            padding: 0.7rem 0.8rem;
+        }
+
+        .panel > h2 {
+            font-size: 0.68rem;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            color: var(--muted);
+            margin: 0 0 0.55rem;
+            font-weight: 600;
+        }
+
+        .gate {
+            text-align: center;
+            padding-bottom: 0.85rem;
+        }
+
+        .gate .state {
+            font-size: 1.9rem;
+            font-weight: 700;
+            letter-spacing: 0.06em;
+            line-height: 1.1;
+        }
+
+        .gate .sub {
+            font-size: 0.72rem;
+            color: var(--muted);
+            margin-top: 0.3rem;
+            min-height: 1rem;
+        }
+
+        .gate[data-state="idle"] .state {
+            color: var(--muted);
+        }
+
+        .gate[data-state="pass"] .state {
+            color: var(--phosphor);
+            text-shadow: 0 0 12px var(--phosphor-dim);
+        }
+
+        .gate[data-state="regressed"] .state {
+            color: var(--red);
+            text-shadow: 0 0 12px var(--red);
+        }
+
+        .cmp {
+            width: 100%;
+            border-collapse: collapse;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .cmp th {
+            font-size: 0.58rem;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--muted);
+            font-weight: 600;
+            text-align: right;
+            padding: 0 0 0.35rem;
+        }
+
+        .cmp th:first-child {
+            text-align: left;
+        }
+
+        .cmp td {
+            font-size: 0.78rem;
+            padding: 0.2rem 0;
+            text-align: right;
+            color: var(--ink);
+        }
+
+        .cmp td.metric {
+            text-align: left;
+            color: var(--muted);
+            letter-spacing: 0.03em;
+        }
+
+        .cmp td.delta {
+            min-width: 4.2rem;
+        }
+
+        .cmp td.delta[data-dir="better"] {
+            color: var(--phosphor);
+        }
+
+        .cmp td.delta[data-dir="worse"] {
+            color: var(--amber);
+        }
+
+        .cmp td.delta[data-dir="fail"] {
+            color: var(--red);
+            font-weight: 600;
+        }
+
+        .cmp td.delta[data-dir="flat"] {
+            color: var(--muted);
+        }
+
+        .cmp tr.divider td {
+            border-top: 1px solid var(--edge);
+            padding-top: 0.35rem;
+        }
+
+        .baseinfo {
+            font-size: 0.68rem;
+            color: var(--muted);
+            line-height: 1.5;
+        }
+
+        .baseinfo b {
+            color: var(--phosphor-dim);
+        }
+
+        .baseinfo .none {
+            color: var(--muted);
+            font-style: italic;
+        }
+
+        footer {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 1rem;
+            border-top: 1px solid var(--edge);
+            padding-top: 0.6rem;
+        }
+
+        .ctl {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.74rem;
+            color: var(--muted);
+        }
+
+        .ctl label {
+            letter-spacing: 0.08em;
+        }
+
+        input[type="range"] {
+            width: 12rem;
+            accent-color: var(--phosphor);
+        }
+
+        .count {
+            color: var(--phosphor);
+            font-variant-numeric: tabular-nums;
+            min-width: 3.6rem;
+            text-align: right;
+        }
+
+        button {
+            font-family: inherit;
+            font-size: 0.72rem;
+            letter-spacing: 0.08em;
+            color: var(--ink);
+            background: var(--panel);
+            border: 1px solid var(--edge);
+            border-radius: 0.35rem;
+            padding: 0.4rem 0.7rem;
+            cursor: pointer;
+        }
+
+        @media (hover: hover) {
+            button:hover {
+                border-color: var(--phosphor-dim);
+                color: var(--phosphor);
+            }
+        }
+
+        button:active {
+            transform: translateY(1px);
+        }
+
+        button.primary {
+            color: var(--phosphor);
+            border-color: var(--phosphor-dim);
+        }
+
+        button.warn {
+            color: var(--amber);
+            border-color: color-mix(in oklch, var(--amber) 40%, var(--edge));
+        }
+
+        .hint {
+            font-size: 0.66rem;
+            color: var(--muted);
+            max-width: 22rem;
+        }
+
+        .hint b {
+            color: var(--phosphor-dim);
+        }
+
+        code {
+            color: var(--phosphor-dim);
+        }
+    </style>
+</head>
+<body>
+<div class="app">
+    <header>
+        <h1>lite-profiler <span>// capture vs baseline</span></h1>
+        <div class="run" id="run" data-run="running">RUNNING</div>
+    </header>
+
+    <main>
+        <section class="stage">
+            <canvas id="scope"></canvas>
+            <div class="tag">FRAME-TIME OSCILLOSCOPE &mdash; live trace vs captured baseline</div>
+            <div class="legend">
+                <span class="live"><i></i>live</span>
+                <span class="base"><i></i>baseline p99</span>
+                <span class="budget"><i></i>16.7ms</span>
+            </div>
+        </section>
+
+        <aside class="side">
+            <div class="panel gate" id="gate" data-state="idle">
+                <div class="state" id="gateState">NO BASELINE</div>
+                <div class="sub" id="gateSub">capture a baseline, then change the load</div>
+            </div>
+
+            <div class="panel">
+                <h2>Baseline vs live</h2>
+                <table class="cmp">
+                    <thead>
+                    <tr>
+                        <th>metric</th>
+                        <th>baseline</th>
+                        <th>live</th>
+                        <th>delta</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    <tr>
+                        <td class="metric">frame.avg</td>
+                        <td id="b-avg">-</td>
+                        <td id="l-avg">-</td>
+                        <td class="delta" id="d-avg" data-dir="flat">-</td>
+                    </tr>
+                    <tr>
+                        <td class="metric">frame.p99</td>
+                        <td id="b-p99">-</td>
+                        <td id="l-p99">-</td>
+                        <td class="delta" id="d-p99" data-dir="flat">-</td>
+                    </tr>
+                    <tr>
+                        <td class="metric">fps</td>
+                        <td id="b-fps">-</td>
+                        <td id="l-fps">-</td>
+                        <td class="delta" id="d-fps" data-dir="flat">-</td>
+                    </tr>
+                    <tr class="divider">
+                        <td class="metric">compute.p99</td>
+                        <td id="b-cmp">-</td>
+                        <td id="l-cmp">-</td>
+                        <td class="delta" id="d-cmp" data-dir="flat">-</td>
+                    </tr>
+                    <tr>
+                        <td class="metric">commit.p99</td>
+                        <td id="b-cmt">-</td>
+                        <td id="l-cmt">-</td>
+                        <td class="delta" id="d-cmt" data-dir="flat">-</td>
+                    </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="panel">
+                <h2>Captured baseline</h2>
+                <div class="baseinfo" id="baseinfo"><span class="none">none captured</span></div>
+            </div>
+
+            <div class="panel">
+                <p class="hint">Let the run settle, hit <b>capture baseline</b> to freeze a
+                    <code>summarize()</code> snapshot, then drag <b>load</b> up (or <b>inject spikes</b>).
+                    The gate is <code>checkRegression()</code> at avg/p99 +10%, phase p99 +15%. In CI the
+                    same pair goes through <code>assertNoRegression()</code>.</p>
+            </div>
+        </aside>
+    </main>
+
+    <footer>
+        <div class="ctl">
+            <label for="load">LOAD</label>
+            <input type="range" id="load" min="0" max="24" step="0.5" value="6"/>
+            <span class="count" id="loadVal">6.0 ms</span>
+        </div>
+        <button id="capture" class="primary">CAPTURE BASELINE</button>
+        <button id="clear">CLEAR</button>
+        <button id="spike" class="warn">INJECT SPIKES</button>
+        <button id="pause">PAUSE</button>
+    </footer>
+</div>
+
+<script type="module">
+    import {Profiler, summarize, diffCaptures, checkRegression} from '@zakkster/lite-profiler';
+
+    /* ---- cached DOM refs ---- */
+    const $stage = document.querySelector('.stage');
+    const $scope = document.getElementById('scope');
+    const $run = document.getElementById('run');
+    const $gate = document.getElementById('gate');
+    const $gateState = document.getElementById('gateState');
+    const $gateSub = document.getElementById('gateSub');
+    const $baseinfo = document.getElementById('baseinfo');
+    const $load = document.getElementById('load');
+    const $loadVal = document.getElementById('loadVal');
+    const $capture = document.getElementById('capture');
+    const $clear = document.getElementById('clear');
+    const $spike = document.getElementById('spike');
+    const $pause = document.getElementById('pause');
+
+    const CELL = {
+        'frame.avg': {
+            b: document.getElementById('b-avg'),
+            l: document.getElementById('l-avg'),
+            d: document.getElementById('d-avg')
+        },
+        'frame.p99': {
+            b: document.getElementById('b-p99'),
+            l: document.getElementById('l-p99'),
+            d: document.getElementById('d-p99')
+        },
+        'frame.fps': {
+            b: document.getElementById('b-fps'),
+            l: document.getElementById('l-fps'),
+            d: document.getElementById('d-fps')
+        },
+        'phase.compute.p99': {
+            b: document.getElementById('b-cmp'),
+            l: document.getElementById('l-cmp'),
+            d: document.getElementById('d-cmp')
+        },
+        'phase.commit.p99': {
+            b: document.getElementById('b-cmt'),
+            l: document.getElementById('l-cmt'),
+            d: document.getElementById('d-cmt')
+        }
+    };
+
+    /* ---- constants ---- */
+    const CAP = 512;
+    const PHASES = ['compute', 'commit'];
+    const BUDGET_60 = 1000 / 60;
+    const PULSE_MS = 100;                 // ~10Hz UI updates
+    const SPIKE_BURST = 8;                // frames per spike injection
+    const TOL = {'frame.avg': 0.10, 'frame.p99': 0.10, 'phase.compute.p99': 0.15, 'phase.commit.p99': 0.15};
+    const HIGHER = {'frame.fps': true};
+
+    /* ---- profiler ---- */
+    const profiler = new Profiler(CAP, PHASES);
+    const H_COMPUTE = profiler.handle('compute');
+    const H_COMMIT = profiler.handle('commit');
+
+    /* ---- state ---- */
+    let running = true;
+    let loadMs = +$load.value;
+    let baseline = null;                  // captured CaptureSummary
+    let baseP99 = 0, baseAvg = 0;         // reference lines for the scope
+    let spikeLeft = 0;
+    let sink = 0;                         // keep synthetic work from being optimized away
+
+    /* ---- scope canvas ---- */
+    const ctx = $scope.getContext('2d');
+    let SW = 0, SH = 0, DPR = 1, SCALE_MS = 40;
+
+    function resizeScope() {
+        DPR = Math.min(window.devicePixelRatio || 1, 2);
+        const r = $stage.getBoundingClientRect();
+        SW = Math.max(1, r.width | 0);
+        SH = Math.max(1, r.height | 0);
+        $scope.width = (SW * DPR) | 0;
+        $scope.height = (SH * DPR) | 0;
+        ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    }
+
+    window.addEventListener('resize', resizeScope);
+
+    /* ---- synthetic, controllable work (spin to a target millisecond budget) ---- */
+    function burn(ms) {
+        if (ms <= 0) return;
+        const end = performance.now() + ms;
+        let acc = sink;
+        while (performance.now() < end) {
+            // a little real math so the loop is not trivially eliminated
+            for (let i = 0; i < 2000; i++) acc += Math.sqrt(i * 1.000003 + acc) | 0;
+        }
+        sink = acc & 0xffff;
+    }
+
+    /* ---- per-frame draw of the frame-time ring (zero allocation) ---- */
+    function drawScope() {
+        ctx.clearRect(0, 0, SW, SH);
+
+        // budget + baseline reference lines
+        const yFor = (ms) => SH - (Math.min(ms, SCALE_MS) / SCALE_MS) * (SH - 8) - 4;
+
+        // 16.7ms budget line (amber, dashed)
+        ctx.strokeStyle = 'rgba(255, 179, 0, 0.5)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        const yb = yFor(BUDGET_60);
+        ctx.moveTo(0, yb);
+        ctx.lineTo(SW, yb);
+        ctx.stroke();
+
+        // baseline p99 line (muted, dashed)
+        if (baseline) {
+            ctx.strokeStyle = 'rgba(93, 133, 121, 0.9)';
+            ctx.beginPath();
+            const yp = yFor(baseP99);
+            ctx.moveTo(0, yp);
+            ctx.lineTo(SW, yp);
+            ctx.stroke();
+        }
+        ctx.setLineDash([]);
+
+        // live frame-time trace (phosphor)
+        const frame = profiler.frame;
+        const n = frame.count;
+        if (n > 1) {
+            const step = SW / (n - 1);
+            ctx.strokeStyle = '#00ffc6';
+            ctx.lineWidth = 1.25;
+            ctx.beginPath();
+            // oldest (i = n-1) on the left, newest (i = 0) on the right
+            for (let k = 0; k < n; k++) {
+                const v = frame.get(n - 1 - k);
+                const x = k * step;
+                const y = yFor(v);
+                if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+        }
+    }
+
+    /* ---- 10Hz: summarize live, compare against the baseline, paint the panel ---- */
+    const fmtMs = (v) => v.toFixed(3);
+    const fmtPct = (p) => (p == null ? 'n/a' : (p >= 0 ? '+' : '') + (p * 100).toFixed(1) + '%');
+
+    function metricDir(path, delta) {
+        // classify the delta cell for coloring
+        const worseUp = !HIGHER[path];           // lower-is-better for everything except fps
+        const pct = delta.pct;
+        if (pct == null) return 'flat';
+        const worseFrac = worseUp ? pct : -pct;  // positive worseFrac => slower/worse
+        if (Math.abs(worseFrac) < 0.005) return 'flat';
+        if (worseFrac <= 0) return 'better';
+        const tol = TOL[path];
+        if (tol != null && worseFrac > tol) return 'fail';
+        return 'worse';
+    }
+
+    function setCell(path, base, live, delta) {
+        const c = CELL[path];
+        if (!c) return;
+        const isFps = HIGHER[path];
+        c.b.textContent = isFps ? base.toFixed(0) : fmtMs(base);
+        c.l.textContent = isFps ? live.toFixed(0) : fmtMs(live);
+        c.d.textContent = fmtPct(delta.pct);
+        c.d.dataset.dir = metricDir(path, delta);
+    }
+
+    function readMetric(summary, path) {
+        const p = path.split('.');
+        if (p[0] === 'frame') return summary.frame[p[1]];
+        return summary.phases[p[1]] ? summary.phases[p[1]][p[2]] : 0;
+    }
+
+    function updatePanel() {
+        if (profiler.frame.count === 0) return;
+        const live = summarize(profiler, {label: 'live', engine: 'demo-workload'});
+
+        if (!baseline) {
+            // no baseline yet: show live values only
+            for (const path in CELL) {
+                const c = CELL[path];
+                const v = readMetric(live, path);
+                c.l.textContent = (path === 'frame.fps') ? v.toFixed(0) : fmtMs(v);
+                c.b.textContent = '-';
+                c.d.textContent = '-';
+                c.d.dataset.dir = 'flat';
+            }
+            return;
+        }
+
+        const diff = diffCaptures(baseline, live);
+        const check = checkRegression(baseline, live, TOL);
+
+        for (const path in CELL) {
+            const p = path.split('.');
+            const d = (p[0] === 'frame') ? diff.frame[p[1]]
+                : (diff.phases[p[1]] && diff.phases[p[1]][p[2]]);
+            if (d) setCell(path, d.base, d.cand, d);
+        }
+
+        if (check.ok) {
+            $gate.dataset.state = 'pass';
+            $gateState.textContent = 'PASS';
+            $gateSub.textContent = 'within tolerance of baseline';
+        } else {
+            $gate.dataset.state = 'regressed';
+            $gateState.textContent = 'REGRESSED';
+            const names = check.regressions.map((r) => r.metric).join(', ');
+            $gateSub.textContent = names;
+        }
+    }
+
+    /* ---- capture / clear ---- */
+    function capture() {
+        baseline = summarize(profiler, {label: 'baseline', engine: 'demo-workload', budgetMs: BUDGET_60});
+        baseAvg = baseline.frame.avg;
+        baseP99 = baseline.frame.p99;
+        $baseinfo.innerHTML =
+            'engine <b>' + baseline.engine + '</b><br>' +
+            'label <b>' + baseline.label + '</b> &middot; frames <b>' + baseline.frameCount + '</b><br>' +
+            'avg <b>' + fmtMs(baseAvg) + 'ms</b> &middot; p99 <b>' + fmtMs(baseP99) + 'ms</b> &middot; ' +
+            'fps <b>' + baseline.frame.fps.toFixed(0) + '</b>';
+        $gate.dataset.state = 'pass';
+        $gateState.textContent = 'PASS';
+        $gateSub.textContent = 'baseline captured';
+    }
+
+    function clearBaseline() {
+        baseline = null;
+        baseP99 = 0;
+        baseAvg = 0;
+        $baseinfo.innerHTML = '<span class="none">none captured</span>';
+        $gate.dataset.state = 'idle';
+        $gateState.textContent = 'NO BASELINE';
+        $gateSub.textContent = 'capture a baseline, then change the load';
+    }
+
+    /* ---- controls ---- */
+    $load.addEventListener('input', () => {
+        loadMs = +$load.value;
+        $loadVal.textContent = loadMs.toFixed(1) + ' ms';
+    });
+    $capture.addEventListener('click', capture);
+    $clear.addEventListener('click', clearBaseline);
+    $spike.addEventListener('click', () => {
+        spikeLeft = SPIKE_BURST;
+    });
+    $pause.addEventListener('click', () => {
+        running = !running;
+        $run.dataset.run = running ? 'running' : 'paused';
+        $run.textContent = running ? 'RUNNING' : 'PAUSED';
+        $pause.textContent = running ? 'PAUSE' : 'RESUME';
+    });
+
+    /* ---- main loop ---- */
+    let pulseAcc = 0, lastPulse = 0;
+
+    function loop(now) {
+        if (running) {
+            let extra = 0;
+            if (spikeLeft > 0) {
+                extra = 22;
+                spikeLeft--;
+            }     // a burst of over-budget frames
+
+            profiler.beginFrame();
+            profiler.beginAt(H_COMPUTE);
+            burn(loadMs * 0.68 + extra);
+            profiler.endAt(H_COMPUTE);
+            profiler.beginAt(H_COMMIT);
+            burn(loadMs * 0.32);
+            profiler.endAt(H_COMMIT);
+            profiler.endFrame();
+
+            drawScope();
+
+            if (now - lastPulse >= PULSE_MS) {
+                lastPulse = now;
+                updatePanel();
+            }
+        }
+        requestAnimationFrame(loop);
+    }
+
+    resizeScope();
+    $loadVal.textContent = loadMs.toFixed(1) + ' ms';
+    requestAnimationFrame((t) => {
+        lastPulse = t;
+        loop(t);
+    });
+</script>
+</body>
+</html>

@@ -138,13 +138,16 @@ Zero-GC frame and per-phase timing. Phases are registered once at construction; 
 `update(buffer)` (zero-alloc, reuses `bins`), `bins: Uint32Array(7)`, `total`, `modeIndex`, `jankRatio`, `spikeRatio`, `classify(): FrameClass`. `FrameClass = { STEADY, SPIKING, THROTTLED }`.
 
 ### `encodeCapture` / `decodeCapture` — `.litecap` binary IO
-`encodeCapture(profiler, scratch?) -> ArrayBuffer | null` (pass a reusable `Float32Array` scratchpad to avoid allocation; returns `null` if no frames). `decodeCapture(arrayBufferOrView) -> { version, count, numPhases, frames, phases }` — validates magic, version, and exact byte length before reading. `downloadCapture(buffer, filename?)` for browsers. `LITECAP` exposes the format constants.
+`encodeCapture(profiler, scratch?, meta?) -> ArrayBuffer | null` (pass a reusable `Float32Array` scratchpad to avoid allocation; `meta` is optional JSON-serializable provenance such as `{ engine, label }`; returns `null` if no frames). `decodeCapture(arrayBufferOrView) -> { version, count, numPhases, frames, phases, tags, meta }` — validates magic, version, and byte length before reading. `downloadCapture(buffer, filename?)` for browsers. `LITECAP` exposes the format constants.
 
 ### `FrameBudget` / `budgetMs` / `isOverBudget` — budgets
 `FrameBudget.{FPS_30, FPS_60, FPS_120}` in ms, `budgetMs(targetFps)`, `isOverBudget(frameMs, targetFps)`.
 
 ### `MeterHud` — CPU overlay
 `new MeterHud(canvas, profiler, options?)`, `render()`, `resize(w, h)`, `setMaxMs(ms)`, `destroy()`. Renders the frame-time envelope via `lite-canvas-graph` with a small ms/fps readout. Worker / `OffscreenCanvas` friendly via the `dpr` option.
+
+### `summarize` / `diffCaptures` / `checkRegression` / `assertNoRegression` — comparison
+`summarize(profiler, meta?) -> CaptureSummary` reduces a window to a small JSON-serializable object (frame `avg/min/max/p01/p99/fps`, `jankRatio`, `spikeRatio`, `frameClass`, histogram `bins`, and per-phase stats) tagged with optional `{ label, engine, budgetMs }`. `summarizeCapture(decoded, meta?)` does the same from a decoded `.litecap`. `diffCaptures(baseline, candidate)` returns per-metric `{ base, cand, delta, pct }`. `checkRegression(baseline, candidate, tolerances?)` returns `{ ok, regressions, diff }`; `assertNoRegression(...)` throws a `RegressionError` (carrying `err.report`) when a gated metric worsens beyond tolerance. `DEFAULT_TOLERANCES` gates `frame.avg` and `frame.p99` at `+10%`.
 
 ## The `.litecap` format
 
@@ -153,13 +156,37 @@ A flat little-endian buffer. Frames and each phase are stored oldest-first.
 | Offset | Type | Field | Notes |
 |---|---|---|---|
 | `0` | `uint8[4]` | magic | `'L' 'C' 'A' 'P'` |
-| `4` | `uint8` | version | `1` |
+| `4` | `uint8` | version | `1` or `2` |
 | `5` | `uint32` LE | count | samples per buffer |
 | `9` | `uint8` | phases | number of phase buffers |
 | `10` | `float32[count]` LE | frames | total frame times |
 | `10 + 4*count` | `float32[count]` LE | phase *p* | repeated for `p = 0 .. phases-1` |
 
-Total size is `10 + (count * 4) + (phases * count * 4)` bytes. `decodeCapture` rejects any buffer shorter than this, so a truncated or hostile input cannot over-read.
+Total size is `10 + (count * 4) + (phases * count * 4)` bytes for v1. **v2** appends a self-describing trailer after the float data: each phase tag as a `uint8` length + UTF-8 bytes (registration order), then a `uint32` length + UTF-8 JSON metadata blob. `decodeCapture` bounds-checks every trailer read and still decodes v1 buffers (returning `tags: []`, `meta: null`), so older captures keep working with no consumer changes.
+
+## Capture comparison & regression gating
+
+`summarize()` turns a rolling window into a small, self-describing snapshot; comparing two snapshots is how you prove a change did not cost performance. Because the profiler is engine-agnostic, the same workload can be captured under different builds and diffed — which is exactly how this pairs with the reactive stack: profile one graph under lite-signal 1.3.0, again under 1.4.0 (and later 1.7.0), and gate on the delta. A conformance suite says the engine is *still correct*; this says it is *still fast*.
+
+```js
+import { summarize, assertNoRegression } from '@zakkster/lite-profiler';
+
+// baseline: profile the workload on the current engine, save the summary as JSON
+const baseline = summarize(profiler, { label: 'fan-out-1k', engine: 'lite-signal@1.3.0' });
+// fs.writeFileSync('baseline.json', JSON.stringify(baseline));
+
+// candidate: the same workload on the next engine
+const candidate = summarize(profiler2, { label: 'fan-out-1k', engine: 'lite-signal@1.4.0-beta.1' });
+
+// gate: throws RegressionError if a gated metric regressed beyond tolerance
+assertNoRegression(baseline, candidate, {
+  'frame.avg': 0.10,
+  'frame.p99': 0.10,
+  'phase.render.p99': 0.15
+});
+```
+
+The summary is plain JSON, so a baseline is git-diffable and lives next to the test. `checkRegression()` is the non-throwing form when you want to report rather than fail. `fps` is higher-is-better and gated in the opposite direction automatically. Metric paths are `frame.<metric>` or `phase.<tag>.<metric>`.
 
 ## Recipes
 
@@ -185,10 +212,10 @@ console.log('render p99 =', out.p99.toFixed(2), 'ms');
 ```js
 import { encodeCapture, decodeCapture, downloadCapture } from '@zakkster/lite-profiler';
 const scratch = new Float32Array(profiler.capacity); // reuse across captures, no per-call alloc
-const buf = encodeCapture(profiler, scratch);
+const buf = encodeCapture(profiler, scratch, { engine: 'lite-signal@1.4.0', label: 'session' });
 if (buf) downloadCapture(buf, 'session.litecap');
-// in an analysis tool later:
-const { frames, phases } = decodeCapture(buf);
+// in an analysis tool later (v2 captures also carry tags + meta):
+const { frames, phases, tags, meta } = decodeCapture(buf);
 ```
 
 **Live overlay**
@@ -209,10 +236,12 @@ This package is the focused core. Each layer below ships separately so the core 
 - **`lite-profiler-gl`** — a `lite-gl` HUD backend rendering thousands of frames across many phases in a single instanced draw.
 - **Diagnostic dashboard** — a live showcase profiling a real workload (a `lite-soa-particle-engine` / `lite-fx` storm), with `lite-hotkey` to toggle the overlay.
 
+Capture comparison and regression gating (`summarize` / `diffCaptures` / `assertNoRegression`) landed in the core in 1.1.0. A Perfetto / Chrome-trace exporter is under consideration as a fast-follow, but it needs a timeline-capture layer first: the rings store durations, not absolute timestamps or a frame-to-phase association, so a faithful flame chart is a data-model addition rather than a formatting shim.
+
 ## Testing
 
 ```bash
-npm test             # node --test (25 tests, zero dependencies)
+npm test             # node --test (32 tests, zero dependencies)
 npm run bundle-check # esbuild ESM bundle sanity check
 ```
 

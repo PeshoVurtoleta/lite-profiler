@@ -1,6 +1,6 @@
 {
   "name": "@zakkster/lite-profiler",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Zero-GC frame and per-phase profiler for game loops. performance.now() into power-of-two ring buffers, single-pass percentile stats, a bimodal frame-time classifier (GC-spike vs sustained throttle), and a shareable binary .litecap capture format with a reader. Engine-agnostic core; reactive layer ships separately.",
   "type": "module",
   "main": "./index.js",

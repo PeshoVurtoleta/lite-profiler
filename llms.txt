@@ -15,9 +15,19 @@ core; reactive and GPU layers ship separately.
   phase(tag), phaseAt(handle), reset(), destroy().
 - FrameHistogram - update(buffer), bins, total, modeIndex, jankRatio,
   spikeRatio, classify() -> FrameClass.{STEADY,SPIKING,THROTTLED}.
-- encodeCapture(profiler, scratch?) -> ArrayBuffer|null,
-  decodeCapture(arrayBufferOrView) -> {version,count,numPhases,frames,phases},
+- encodeCapture(profiler, scratch?, meta?) -> ArrayBuffer|null (v2 embeds phase
+  tags + optional meta), decodeCapture(arrayBufferOrView) ->
+  {version,count,numPhases,frames,phases,tags,meta} (v1 decodes: tags[],meta null),
   downloadCapture(buffer, filename?), LITECAP constants.
+- summarize(profiler, meta?) -> CaptureSummary {schema,label,engine,timestamp,
+  budgetMs,frameCount,capacity,frame:{avg,min,max,p01,p99,fps,jankRatio,spikeRatio,
+  frameClass,bins},phases:{[tag]:{avg,min,max,p01,p99,last,count}}}.
+  summarizeCapture(decoded, meta?) -> CaptureSummary from a decoded LiteCap.
+- diffCaptures(baseline, candidate) -> per-metric {base,cand,delta,pct}.
+  checkRegression(baseline, candidate, tolerances?) -> {ok,regressions,diff}.
+  assertNoRegression(baseline, candidate, tolerances?) throws RegressionError
+  (err.report) past tolerance. DEFAULT_TOLERANCES {frame.avg:0.10,frame.p99:0.10},
+  SUMMARY_SCHEMA. Metric paths: frame.<m> or phase.<tag>.<m>; fps higher-better.
 - FrameBudget, budgetMs(targetFps), isOverBudget(frameMs, targetFps).
 - MeterHud(canvas, profiler, options?) - render(), resize(), setMaxMs(),
   destroy().
