@@ -11,6 +11,6 @@ export {
     DEFAULT_TOLERANCES, SUMMARY_SCHEMA
 } from './src/compare.js';
 export type {
-    CaptureSummary, FrameSummary, PhaseSummary, MetricDelta, CaptureDiff,
+    CaptureSummary, FrameSummary, PhaseSummary, CounterSummary, MetricDelta, CaptureDiff,
     Regression, RegressionReport
 } from './src/compare.js';

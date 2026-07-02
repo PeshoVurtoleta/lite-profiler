@@ -19,6 +19,21 @@ export interface PhaseSummary {
     count: number;
 }
 
+/** Per-counter statistics inside a CaptureSummary. */
+export interface CounterSummary {
+    /** Exact integer total over the window (Float64 accumulation). */
+    sum: number;
+    avg: number;
+    min: number;
+    max: number;
+    p01: number;
+    p99: number;
+    /** Most recent per-frame value. */
+    last: number;
+    /** Number of frames in the window. */
+    count: number;
+}
+
 /** Frame statistics inside a CaptureSummary. */
 export interface FrameSummary {
     avg: number;
@@ -52,6 +67,8 @@ export interface CaptureSummary {
     capacity: number;
     frame: FrameSummary;
     phases: Record<string, PhaseSummary>;
+    /** Deterministic per-frame command counters (empty when none are registered). */
+    counters: Record<string, CounterSummary>;
 }
 
 /** One metric's baseline/candidate values and their delta. */
@@ -72,16 +89,20 @@ export interface CaptureDiff {
         frameClass: { base: string; cand: string; changed: boolean };
     };
     phases: Record<string, Record<string, MetricDelta> | { missing: 'baseline' | 'candidate' }>;
+    counters: Record<string, Record<string, MetricDelta> | { missing: 'baseline' | 'candidate' }>;
 }
 
 /** One metric that worsened beyond tolerance. */
 export interface Regression {
     metric: string;
     baseline: number;
-    candidate: number;
-    /** Fractional worsening (Infinity when the baseline was 0). */
+    /** Candidate value, or null when the metric vanished from the candidate. */
+    candidate: number | null;
+    /** Fractional worsening (Infinity when the baseline was 0 or the metric vanished). */
     change: number;
     tolerance: number;
+    /** Present when the regression is structural rather than a threshold breach. */
+    reason?: string;
 }
 
 /** Result of {@link checkRegression}. */
@@ -99,7 +120,7 @@ export function summarize(
 
 /** Reduce a decoded LiteCap to a CaptureSummary (v2 carries tags; v1 needs meta.tags). */
 export function summarizeCapture(
-    decoded: { count?: number; frames: Float32Array; phases: Float32Array[]; tags?: string[]; meta?: object },
+    decoded: { count?: number; frames: Float32Array; phases: Float32Array[]; tags?: string[]; meta?: object; counters?: Float32Array[]; counterTags?: string[] },
     meta?: { label?: string; engine?: string; budgetMs?: number; timestamp?: number; tags?: string[] }
 ): CaptureSummary;
 

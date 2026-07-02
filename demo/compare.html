@@ -9,9 +9,9 @@
 {
   "imports": {
     "@zakkster/lite-profiler": "../index.js",
-    "@zakkster/lite-ring-buffer": "../node_modules/@zakkster/lite-ring-buffer/RingBuffer.js",
-    "@zakkster/lite-stats-math": "../node_modules/@zakkster/lite-stats-math/StatsMath.js",
-    "@zakkster/lite-canvas-graph": "../node_modules/@zakkster/lite-canvas-graph/CanvasGraph.js"
+    "@zakkster/lite-ring-buffer": "https://esm.sh/@zakkster/lite-ring-buffer@1",
+    "@zakkster/lite-stats-math": "https://esm.sh/@zakkster/lite-stats-math@1",
+    "@zakkster/lite-canvas-graph": "https://esm.sh/@zakkster/lite-canvas-graph@1"
   }
 }
 
@@ -108,8 +108,40 @@
             border-color: var(--phosphor-dim);
         }
 
+        .run[data-run="spike"] {
+            color: var(--amber);
+            border-color: var(--amber);
+        }
+
         .run[data-run="paused"] {
             color: var(--muted);
+        }
+
+        .xlink {
+            font-size: 0.7rem;
+            letter-spacing: 0.08em;
+            color: var(--phosphor-dim);
+            text-decoration: none;
+            margin-left: auto;
+            margin-right: 1rem;
+        }
+
+        @media (hover: hover) {
+            .xlink:hover {
+                color: var(--phosphor);
+            }
+        }
+
+        .cmp td.cls {
+            font-size: 0.68rem;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+        }
+
+        .fnote {
+            font-size: 0.6rem;
+            color: var(--muted);
+            margin: 0.4rem 0 0;
         }
 
         main {
@@ -363,6 +395,11 @@
             transform: translateY(1px);
         }
 
+        button:disabled {
+            opacity: 0.45;
+            cursor: default;
+        }
+
         button.primary {
             color: var(--phosphor);
             border-color: var(--phosphor-dim);
@@ -392,6 +429,7 @@
 <div class="app">
     <header>
         <h1>lite-profiler <span>// capture vs baseline</span></h1>
+        <a class="xlink" href="index.html">&larr; diagnostic dashboard</a>
         <div class="run" id="run" data-run="running">RUNNING</div>
     </header>
 
@@ -437,10 +475,16 @@
                         <td class="delta" id="d-p99" data-dir="flat">-</td>
                     </tr>
                     <tr>
-                        <td class="metric">fps</td>
+                        <td class="metric">frame.fps<sup>*</sup></td>
                         <td id="b-fps">-</td>
                         <td id="l-fps">-</td>
                         <td class="delta" id="d-fps" data-dir="flat">-</td>
+                    </tr>
+                    <tr>
+                        <td class="metric">frameClass</td>
+                        <td class="cls" id="b-cls">-</td>
+                        <td class="cls" id="l-cls">-</td>
+                        <td class="delta" id="d-cls" data-dir="flat">-</td>
                     </tr>
                     <tr class="divider">
                         <td class="metric">compute.p99</td>
@@ -456,6 +500,7 @@
                     </tr>
                     </tbody>
                 </table>
+                <p class="fnote">* fps = 1000 / avg of measured frame work (throughput capacity), not display refresh.</p>
             </div>
 
             <div class="panel">
@@ -479,6 +524,7 @@
             <span class="count" id="loadVal">6.0 ms</span>
         </div>
         <button id="capture" class="primary">CAPTURE BASELINE</button>
+        <button id="download" disabled>SUMMARY .json</button>
         <button id="clear">CLEAR</button>
         <button id="spike" class="warn">INJECT SPIKES</button>
         <button id="pause">PAUSE</button>
@@ -499,9 +545,13 @@
     const $load = document.getElementById('load');
     const $loadVal = document.getElementById('loadVal');
     const $capture = document.getElementById('capture');
+    const $download = document.getElementById('download');
     const $clear = document.getElementById('clear');
     const $spike = document.getElementById('spike');
     const $pause = document.getElementById('pause');
+    const $bCls = document.getElementById('b-cls');
+    const $lCls = document.getElementById('l-cls');
+    const $dCls = document.getElementById('d-cls');
 
     const CELL = {
         'frame.avg': {
@@ -539,6 +589,7 @@
     const SPIKE_BURST = 8;                // frames per spike injection
     const TOL = {'frame.avg': 0.10, 'frame.p99': 0.10, 'phase.compute.p99': 0.15, 'phase.commit.p99': 0.15};
     const HIGHER = {'frame.fps': true};
+    const CLS_ORDER = {steady: 0, spiking: 1, throttled: 2};   // severity for coloring the class delta
 
     /* ---- profiler ---- */
     const profiler = new Profiler(CAP, PHASES);
@@ -555,7 +606,13 @@
 
     /* ---- scope canvas ---- */
     const ctx = $scope.getContext('2d');
-    let SW = 0, SH = 0, DPR = 1, SCALE_MS = 40;
+    let SW = 0, SH = 0, DPR = 1;
+    const SCALE_BASE = 24;                // minimum top-of-scale in ms
+    let scaleMs = SCALE_BASE;             // autoscaled to the observed peak
+    const traceCopy = new Float32Array(CAP);   // one memcpy per frame instead of N get() calls
+    let scopeFont = '11px ui-monospace, monospace';
+    let scaleLabel = '';                  // rebuilt at 10Hz, drawn per frame (no per-frame toFixed)
+    let baseLabel = '';                   // rebuilt on capture
 
     function resizeScope() {
         DPR = Math.min(window.devicePixelRatio || 1, 2);
@@ -565,6 +622,7 @@
         $scope.width = (SW * DPR) | 0;
         $scope.height = (SH * DPR) | 0;
         ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+        scopeFont = '600 11px ui-monospace, monospace';
     }
 
     window.addEventListener('resize', resizeScope);
@@ -586,11 +644,24 @@
     const NODASH = [];
 
     function yFor(ms) {
-        return SH - (Math.min(ms, SCALE_MS) / SCALE_MS) * (SH - 8) - 4;
+        return SH - (Math.min(ms, scaleMs) / scaleMs) * (SH - 8) - 4;
     }
 
     function drawScope() {
         ctx.clearRect(0, 0, SW, SH);
+
+        // pull the window once (oldest-first), find the peak, autoscale so nothing clips
+        const frame = profiler.frame;
+        const n = frame.copyTo(traceCopy, 0);
+        let peak = 0;
+        for (let k = 0; k < n; k++) {
+            const v = traceCopy[k];
+            if (v > peak) peak = v;
+        }
+        let s = SCALE_BASE;
+        if (peak * 1.15 > s) s = peak * 1.15;
+        if (baseP99 * 1.15 > s) s = baseP99 * 1.15;
+        scaleMs = s;
 
         // 16.7ms budget line (amber, dashed)
         ctx.strokeStyle = 'rgba(255, 179, 0, 0.5)';
@@ -602,7 +673,7 @@
         ctx.lineTo(SW, yb);
         ctx.stroke();
 
-        // baseline p99 line (muted, dashed)
+        // baseline p99 line (muted, dashed) with its captured value
         if (baseline) {
             ctx.strokeStyle = 'rgba(93, 133, 121, 0.9)';
             ctx.beginPath();
@@ -610,25 +681,34 @@
             ctx.moveTo(0, yp);
             ctx.lineTo(SW, yp);
             ctx.stroke();
+            ctx.setLineDash(NODASH);
+            ctx.fillStyle = 'rgba(93, 133, 121, 0.9)';
+            ctx.font = scopeFont;
+            ctx.textAlign = 'right';
+            ctx.fillText(baseLabel, SW - 8, yp - 4);
         }
         ctx.setLineDash(NODASH);
 
         // live frame-time trace (phosphor)
-        const frame = profiler.frame;
-        const n = frame.count;
         if (n > 1) {
             const step = SW / (n - 1);
             ctx.strokeStyle = '#00ffc6';
             ctx.lineWidth = 1.25;
             ctx.beginPath();
-            // oldest (i = n-1) on the left, newest (i = 0) on the right
             for (let k = 0; k < n; k++) {
-                const v = frame.get(n - 1 - k);
                 const x = k * step;
-                const y = yFor(v);
+                const y = yFor(traceCopy[k]);
                 if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
             }
             ctx.stroke();
+        }
+
+        // calibration (string cached at 10Hz; only fillText runs per frame)
+        if (scaleLabel !== '') {
+            ctx.fillStyle = 'rgba(93, 133, 121, 0.9)';
+            ctx.font = scopeFont;
+            ctx.textAlign = 'left';
+            ctx.fillText(scaleLabel, 8, SH - 8);
         }
     }
 
@@ -669,6 +749,9 @@
         if (profiler.frame.count === 0) return;
         const live = summarize(profiler, {label: 'live', engine: 'demo-workload'});
 
+        // scope calibration string (drawn per frame from cache)
+        scaleLabel = (scaleMs / 4).toFixed(1) + ' ms/div (top ' + scaleMs.toFixed(0) + ' ms)';
+
         if (!baseline) {
             // no baseline yet: show live values only
             for (const path in CELL) {
@@ -679,6 +762,10 @@
                 c.d.textContent = '-';
                 c.d.dataset.dir = 'flat';
             }
+            $lCls.textContent = live.frame.frameClass;
+            $bCls.textContent = '-';
+            $dCls.textContent = '-';
+            $dCls.dataset.dir = 'flat';
             return;
         }
 
@@ -692,6 +779,18 @@
             if (d) setCell(path, d.base, d.cand, d);
         }
 
+        // classifier verdicts through the diff API: worse when severity rose
+        const fc = diff.frame.frameClass;
+        $bCls.textContent = fc.base;
+        $lCls.textContent = fc.cand;
+        if (!fc.changed) {
+            $dCls.textContent = 'same';
+            $dCls.dataset.dir = 'flat';
+        } else {
+            $dCls.textContent = fc.base + ' -> ' + fc.cand;
+            $dCls.dataset.dir = CLS_ORDER[fc.cand] > CLS_ORDER[fc.base] ? 'fail' : 'better';
+        }
+
         if (check.ok) {
             $gate.dataset.state = 'pass';
             $gateState.textContent = 'PASS';
@@ -699,21 +798,27 @@
         } else {
             $gate.dataset.state = 'regressed';
             $gateState.textContent = 'REGRESSED';
-            const names = check.regressions.map((r) => r.metric).join(', ');
+            const names = check.regressions.map((r) =>
+                r.metric + (r.change === Infinity ? ' (new from 0)' : ' +' + (r.change * 100).toFixed(0) + '%')
+            ).join(', ');
             $gateSub.textContent = names;
         }
     }
 
     /* ---- capture / clear ---- */
     function capture() {
+        if (profiler.frame.count === 0) return;   // nothing measured yet
         baseline = summarize(profiler, {label: 'baseline', engine: 'demo-workload', budgetMs: BUDGET_60});
         baseAvg = baseline.frame.avg;
         baseP99 = baseline.frame.p99;
+        baseLabel = 'baseline p99 ' + baseP99.toFixed(2) + ' ms';
+        $download.disabled = false;
         $baseinfo.innerHTML =
             'engine <b>' + baseline.engine + '</b><br>' +
             'label <b>' + baseline.label + '</b> &middot; frames <b>' + baseline.frameCount + '</b><br>' +
             'avg <b>' + fmtMs(baseAvg) + 'ms</b> &middot; p99 <b>' + fmtMs(baseP99) + 'ms</b> &middot; ' +
-            'fps <b>' + baseline.frame.fps.toFixed(0) + '</b>';
+            'fps <b>' + baseline.frame.fps.toFixed(0) + '</b> &middot; ' +
+            'class <b>' + baseline.frame.frameClass + '</b>';
         $gate.dataset.state = 'pass';
         $gateState.textContent = 'PASS';
         $gateSub.textContent = 'baseline captured';
@@ -723,10 +828,26 @@
         baseline = null;
         baseP99 = 0;
         baseAvg = 0;
+        baseLabel = '';
+        $download.disabled = true;
         $baseinfo.innerHTML = '<span class="none">none captured</span>';
         $gate.dataset.state = 'idle';
         $gateState.textContent = 'NO BASELINE';
         $gateSub.textContent = 'capture a baseline, then change the load';
+    }
+
+    // the exact artifact a CI job commits next to the repo: summarize() as JSON
+    function downloadSummary() {
+        if (!baseline) return;
+        const blob = new Blob([JSON.stringify(baseline, null, 2)], {type: 'application/json'});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'baseline-summary.json';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
     }
 
     /* ---- controls ---- */
@@ -734,20 +855,27 @@
         loadMs = +$load.value;
         $loadVal.textContent = loadMs.toFixed(1) + ' ms';
     });
+    // slider release = new workload: clear the rolling window so the candidate
+    // summary reflects only the new load (the baseline is kept, so the gate
+    // reads the change immediately instead of averaging it in over ~8s).
+    $load.addEventListener('change', () => {
+        profiler.reset();
+    });
     $capture.addEventListener('click', capture);
+    $download.addEventListener('click', downloadSummary);
     $clear.addEventListener('click', clearBaseline);
     $spike.addEventListener('click', () => {
         spikeLeft = SPIKE_BURST;
     });
     $pause.addEventListener('click', () => {
         running = !running;
-        $run.dataset.run = running ? 'running' : 'paused';
-        $run.textContent = running ? 'RUNNING' : 'PAUSED';
         $pause.textContent = running ? 'PAUSE' : 'RESUME';
     });
 
     /* ---- main loop ---- */
     let pulseAcc = 0, lastPulse = 0;
+    let currentRunState = 'running';   // cached so loop() only writes the DOM on transition
+    const RUN_LABEL = {running: 'RUNNING', spike: 'SPIKE BURST', paused: 'PAUSED'};
 
     function loop(now) {
         if (running) {
@@ -773,6 +901,14 @@
                 updatePanel();
             }
         }
+
+        const nextRun = !running ? 'paused' : (spikeLeft > 0 ? 'spike' : 'running');
+        if (nextRun !== currentRunState) {
+            currentRunState = nextRun;
+            $run.dataset.run = nextRun;
+            $run.textContent = RUN_LABEL[nextRun];
+        }
+
         requestAnimationFrame(loop);
     }
 

@@ -21,7 +21,7 @@ import { StatsMath } from '@zakkster/lite-stats-math';
 import { FrameHistogram, FrameClass } from './histogram.js';
 
 /** CaptureSummary schema version. */
-export const SUMMARY_SCHEMA = 1;
+export const SUMMARY_SCHEMA = 2;   // v2 adds the optional `counters` block
 
 /** 60fps frame budget in ms; the default recorded in a summary's metadata. */
 const BUDGET_60 = 1000 / 60;
@@ -37,6 +37,7 @@ export const DEFAULT_TOLERANCES = Object.freeze({
 
 const FRAME_METRICS = ['avg', 'min', 'max', 'p01', 'p99', 'fps', 'jankRatio', 'spikeRatio'];
 const PHASE_METRICS = ['avg', 'min', 'max', 'p01', 'p99', 'last'];
+const COUNTER_METRICS = ['sum', 'avg', 'min', 'max', 'p01', 'p99', 'last'];
 
 function emptyFrame() {
     return {
@@ -46,7 +47,7 @@ function emptyFrame() {
     };
 }
 
-function summarizeRings(frameRing, phaseRings, tags, capacity, meta) {
+function summarizeRings(frameRing, phaseRings, tags, counterRings, counterTags, capacity, meta) {
     const stats = new StatsMath(capacity);
     const hist = new FrameHistogram();
     const fOut = { avg: 0, min: 0, max: 0, p01: 0, p99: 0 };
@@ -84,6 +85,30 @@ function summarizeRings(frameRing, phaseRings, tags, capacity, meta) {
         }
     }
 
+    // Counters: same reduction plus an exact integer sum (Float64 accumulation over the
+    // ring; exact well past 2^24 as long as each per-frame value is < 2^24). Off the hot
+    // path, so a lazy scratch alloc here is fine.
+    const counters = {};
+    const cOut = { avg: 0, min: 0, max: 0, p01: 0, p99: 0 };
+    let sumScratch = null;
+    for (let i = 0; i < counterTags.length; i++) {
+        const ring = counterRings[i];
+        const c = ring ? ring.count : 0;
+        if (c > 0) {
+            stats.compute(ring, cOut);
+            if (sumScratch === null) sumScratch = new Float64Array(capacity);
+            const nn = ring.copyTo(sumScratch, 0);
+            let sum = 0;
+            for (let j = 0; j < nn; j++) sum += sumScratch[j];
+            counters[counterTags[i]] = {
+                sum, avg: cOut.avg, min: cOut.min, max: cOut.max, p01: cOut.p01, p99: cOut.p99,
+                last: ring.peekNewest(), count: c
+            };
+        } else {
+            counters[counterTags[i]] = { sum: 0, avg: 0, min: 0, max: 0, p01: 0, p99: 0, last: 0, count: 0 };
+        }
+    }
+
     hist.destroy();
     if (typeof stats.destroy === 'function') stats.destroy();
 
@@ -96,7 +121,8 @@ function summarizeRings(frameRing, phaseRings, tags, capacity, meta) {
         frameCount,
         capacity,
         frame,
-        phases
+        phases,
+        counters
     };
 }
 
@@ -113,7 +139,10 @@ export function summarize(profiler, meta = null) {
     const tags = profiler.phaseTags ? profiler.phaseTags.slice() : [];
     const phaseRings = new Array(tags.length);
     for (let i = 0; i < tags.length; i++) phaseRings[i] = profiler.phase(tags[i]);
-    return summarizeRings(profiler.frame, phaseRings, tags, profiler.capacity, meta);
+    const cTags = profiler.counterTags ? profiler.counterTags.slice() : [];
+    const counterRings = new Array(cTags.length);
+    for (let i = 0; i < cTags.length; i++) counterRings[i] = profiler.counter(cTags[i]);
+    return summarizeRings(profiler.frame, phaseRings, tags, counterRings, cTags, profiler.capacity, meta);
 }
 
 function arrToRing(arr, capacity) {
@@ -140,9 +169,13 @@ export function summarizeCapture(decoded, meta = null) {
     const cap = Math.max(1, count);
     const frameRing = arrToRing(decoded.frames, cap);
     const phaseRings = decoded.phases.map((a) => arrToRing(a, cap));
+    const counterArrs = decoded.counters || [];
+    const cTags = (decoded.counterTags && decoded.counterTags.length) ? decoded.counterTags.slice()
+        : counterArrs.map((_u, i) => 'counter' + i);
+    const counterRings = counterArrs.map((a) => arrToRing(a, cap));
     // fold the capture's own embedded meta in as a fallback
     const merged = Object.assign({}, decoded.meta || null, meta || null);
-    return summarizeRings(frameRing, phaseRings, tags, cap, merged);
+    return summarizeRings(frameRing, phaseRings, tags, counterRings, cTags, cap, merged);
 }
 
 function delta(base, cand) {
@@ -193,7 +226,23 @@ export function diffCaptures(baseline, candidate) {
         }
         phases[t] = row;
     }
-    return { baseline: metaOf(baseline), candidate: metaOf(candidate), frame, phases };
+
+    const counters = {};
+    const ctags = {};
+    for (const t in (baseline.counters || {})) ctags[t] = true;
+    for (const t in (candidate.counters || {})) ctags[t] = true;
+    for (const t in ctags) {
+        const b = baseline.counters ? baseline.counters[t] : null;
+        const c = candidate.counters ? candidate.counters[t] : null;
+        if (!b || !c) { counters[t] = { missing: b ? 'candidate' : 'baseline' }; continue; }
+        const row = {};
+        for (let i = 0; i < COUNTER_METRICS.length; i++) {
+            const k = COUNTER_METRICS[i];
+            row[k] = delta(b[k] || 0, c[k] || 0);
+        }
+        counters[t] = row;
+    }
+    return { baseline: metaOf(baseline), candidate: metaOf(candidate), frame, phases, counters };
 }
 
 function higherIsBetter(path) { return path === 'frame.fps' || path.endsWith('.fps'); }
@@ -204,6 +253,10 @@ function readMetric(summary, path) {
     if (parts[0] === 'phase') {
         const ph = summary.phases ? summary.phases[parts[1]] : null;
         return ph ? ph[parts[2]] : undefined;
+    }
+    if (parts[0] === 'counter') {
+        const cm = summary.counters ? summary.counters[parts[1]] : null;
+        return cm ? cm[parts[2]] : undefined;
     }
     return undefined;
 }
@@ -220,6 +273,18 @@ export function checkRegression(baseline, candidate, tolerances = DEFAULT_TOLERA
         const tol = tolerances[path];
         const b = readMetric(baseline, path);
         const c = readMetric(candidate, path);
+        // Counters are deterministic: a counter the baseline tracked that the candidate no
+        // longer reports has VANISHED -- a structural regression, not a silent skip. (frame
+        // and phase keep the lenient skip below: a phase may legitimately not fire.)
+        if (path.startsWith('counter.') &&
+            typeof b === 'number' && Number.isFinite(b) &&
+            (typeof c !== 'number' || !Number.isFinite(c))) {
+            regressions.push({
+                metric: path, baseline: b, candidate: (typeof c === 'number' ? c : null),
+                change: Infinity, tolerance: tol, reason: 'metric missing in candidate'
+            });
+            continue;
+        }
         if (typeof b !== 'number' || typeof c !== 'number' || !Number.isFinite(b) || !Number.isFinite(c)) continue;
         let worse;
         if (b === 0) worse = (c <= 0) ? 0 : Infinity;
@@ -241,11 +306,12 @@ function fmt(n) { return String(Math.round(n * 1000) / 1000); }
 export function assertNoRegression(baseline, candidate, tolerances = DEFAULT_TOLERANCES) {
     const report = checkRegression(baseline, candidate, tolerances);
     if (!report.ok) {
-        const lines = report.regressions.map((r) =>
-            `  ${r.metric}: ${fmt(r.baseline)} -> ${fmt(r.candidate)} ` +
-            `(${r.change === Infinity ? 'new from 0' : '+' + (r.change * 100).toFixed(1) + '%'}` +
-            ` > ${(r.tolerance * 100).toFixed(0)}% budget)`
-        );
+        const lines = report.regressions.map((r) => {
+            const cand = r.candidate == null ? 'missing' : fmt(r.candidate);
+            const why = r.reason ? r.reason
+                : (r.change === Infinity ? 'new from 0' : '+' + (r.change * 100).toFixed(1) + '%');
+            return `  ${r.metric}: ${fmt(r.baseline)} -> ${cand} (${why} > ${(r.tolerance * 100).toFixed(0)}% budget)`;
+        });
         const err = new Error(
             `lite-profiler: ${report.regressions.length} performance regression(s) exceeded tolerance:\n` +
             lines.join('\n')

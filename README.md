@@ -10,11 +10,11 @@
 ![Tests](https://img.shields.io/badge/Tests-25_passing-brightgreen?style=for-the-badge)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
 
-Always-on frame and per-phase profiling for HTML5 game loops. `performance.now()` into power-of-two ring buffers, single-pass percentiles, a frame-time classifier that tells a GC spike apart from a sustained throttle, and a binary capture format you can serialize, ship, and read back.
+Always-on frame and per-phase profiling for HTML5 game loops. `performance.now()` into power-of-two ring buffers, single-pass percentiles, a frame-time classifier that tells a GC spike apart from a sustained throttle, deterministic per-frame command counters that gate exactly, and a binary capture format you can serialize, ship, and read back.
 
 **The in-engine profiler stats.js doesn't have and DevTools can't keep running.**
 
-> **v1.0.0** is the engine-agnostic, zero-GC capture core. The reactive `lite-signal` bridge, the `lite-scheduler` / `lite-ecs` adapters, and a GPU HUD are companion packages built on this surface (see [Roadmap](#roadmap)).
+> The core is the engine-agnostic, zero-GC capture surface. **1.1.0** added capture comparison + regression gating; **1.2.0** added deterministic per-frame counters. The reactive `lite-signal` bridge, the `lite-scheduler` / `lite-ecs` adapters, and a GPU HUD are companion packages built on this surface (see [Roadmap](#roadmap)).
 
 ## Why lite-profiler?
 
@@ -118,6 +118,31 @@ stateDiagram-v2
   SPIKING --> STEADY: jankRatio < 0.05
 ```
 
+## Deterministic counters
+
+Timing is noisy, so you gate it by *tolerance*. Command counts are not: the draw calls a frame issued, or the floats it uploaded, are integers your code already has at frame end — identical on every host and run. They gate at **zero tolerance, exactly**, in CI, with no median-of-N and no GPU.
+
+Counters register as an optional third argument and use the same `handle` / `At` hot-path idiom as phases (no per-call string hashing); each flushes one value per `endFrame()`:
+
+```js
+const p = new Profiler(1024, ['sim', 'draw'], ['drawCalls', 'floatsUploaded']);
+const UP = p.counterHandle('floatsUploaded');
+// per frame:
+p.count('drawCalls');          // by tag
+p.countAt(UP, batch.floats);   // by handle (hot path)
+```
+
+`summarize()` reports a `counters` block — `{ [tag]: { sum, avg, min, max, p01, p99, last, count } }`, with `sum` an exact integer total — and the counts that must not drift gate at zero:
+
+```js
+assertNoRegression(baseline, candidate, {
+  'counter.floatsUploaded.max': 0,   // dirty-range guard: a one-instance change must not re-upload the buffer
+  'counter.drawCalls.max': 0         // batching guard: the draw-call count must not climb
+});
+```
+
+A counter the baseline tracked that the candidate stops reporting is a **regression** (`reason: 'metric missing in candidate'`) — a gate that can't see the metric it guards must fail, not pass. Per-frame values are exact to `2^24` (Float32 rings); `sum` is an exact Float64 total beyond that. This is the seam a GPU render layer emits into: `recordDraw` / `recordUpload` become `count` calls that gate headlessly alongside timing.
+
 ## Full Module Reference
 
 ### `Profiler` — capture core
@@ -125,20 +150,23 @@ Zero-GC frame and per-phase timing. Phases are registered once at construction; 
 
 | Member | Description |
 |---|---|
-| `new Profiler(capacity?, phases?)` | `capacity` rounds up to a power of two (e.g. `600 -> 1024`); `phases` is a string tag array. |
-| `beginFrame()` / `endFrame()` | Bracket a frame; `endFrame` records total frame time. |
+| `new Profiler(capacity?, phases?, counters?)` | `capacity` rounds up to a power of two (e.g. `600 -> 1024`); `phases` and the optional `counters` are string tag arrays. |
+| `beginFrame()` / `endFrame()` | Bracket a frame; `endFrame` records total frame time and flushes counter accumulators. |
 | `begin(tag)` / `end(tag)` | Time a phase by tag. No-op for unknown tags. |
 | `beginAt(handle)` / `endAt(handle)` | Hot-path form using an integer handle — no string hashing per call. |
 | `handle(tag)` / `tagOf(handle)` | Resolve a tag to a stable handle (`-1` if unknown) and back. |
 | `frame` / `phase(tag)` / `phaseAt(handle)` | The underlying `RingBuffer`s for stats, histogram, export. |
 | `phaseCount` / `capacity` | Counts and the resolved buffer capacity. |
+| `count(tag, n?)` / `countAt(handle, n?)` | Add to a counter for the current frame (accumulates; flushed on `endFrame`). The `At` form skips per-call string hashing. |
+| `counterHandle(tag)` / `counterTagOf(handle)` | Resolve a counter tag to a stable handle (`-1` if unknown) and back. |
+| `counter(tag)` / `counterAt(handle)` / `counterCount` | The counter `RingBuffer`s and their count. |
 | `reset()` / `destroy()` | Clear buffers / release them. |
 
 ### `FrameHistogram` — distribution + classifier
 `update(buffer)` (zero-alloc, reuses `bins`), `bins: Uint32Array(7)`, `total`, `modeIndex`, `jankRatio`, `spikeRatio`, `classify(): FrameClass`. `FrameClass = { STEADY, SPIKING, THROTTLED }`.
 
 ### `encodeCapture` / `decodeCapture` — `.litecap` binary IO
-`encodeCapture(profiler, scratch?, meta?) -> ArrayBuffer | null` (pass a reusable `Float32Array` scratchpad to avoid allocation; `meta` is optional JSON-serializable provenance such as `{ engine, label }`; returns `null` if no frames). `decodeCapture(arrayBufferOrView) -> { version, count, numPhases, frames, phases, tags, meta }` — validates magic, version, and byte length before reading. `downloadCapture(buffer, filename?)` for browsers. `LITECAP` exposes the format constants.
+`encodeCapture(profiler, scratch?, meta?) -> ArrayBuffer | null` (pass a reusable `Float32Array` scratchpad to avoid allocation; `meta` is optional JSON-serializable provenance such as `{ engine, label }`; returns `null` if no frames). `decodeCapture(arrayBufferOrView) -> { version, count, numPhases, frames, phases, tags, meta, counters, counterTags }` — validates magic, version, and byte length before reading (a v3 capture carries counter data; v1/v2 decode with `counters: []`). `downloadCapture(buffer, filename?)` for browsers. `LITECAP` exposes the format constants.
 
 ### `FrameBudget` / `budgetMs` / `isOverBudget` — budgets
 `FrameBudget.{FPS_30, FPS_60, FPS_120}` in ms, `budgetMs(targetFps)`, `isOverBudget(frameMs, targetFps)`.
@@ -147,7 +175,7 @@ Zero-GC frame and per-phase timing. Phases are registered once at construction; 
 `new MeterHud(canvas, profiler, options?)`, `render()`, `resize(w, h)`, `setMaxMs(ms)`, `destroy()`. Renders the frame-time envelope via `lite-canvas-graph` with a small ms/fps readout. Worker / `OffscreenCanvas` friendly via the `dpr` option.
 
 ### `summarize` / `diffCaptures` / `checkRegression` / `assertNoRegression` — comparison
-`summarize(profiler, meta?) -> CaptureSummary` reduces a window to a small JSON-serializable object (frame `avg/min/max/p01/p99/fps`, `jankRatio`, `spikeRatio`, `frameClass`, histogram `bins`, and per-phase stats) tagged with optional `{ label, engine, budgetMs }`. `summarizeCapture(decoded, meta?)` does the same from a decoded `.litecap`. `diffCaptures(baseline, candidate)` returns per-metric `{ base, cand, delta, pct }`. `checkRegression(baseline, candidate, tolerances?)` returns `{ ok, regressions, diff }`; `assertNoRegression(...)` throws a `RegressionError` (carrying `err.report`) when a gated metric worsens beyond tolerance. `DEFAULT_TOLERANCES` gates `frame.avg` and `frame.p99` at `+10%`.
+`summarize(profiler, meta?) -> CaptureSummary` reduces a window to a small JSON-serializable object (frame `avg/min/max/p01/p99/fps`, `jankRatio`, `spikeRatio`, `frameClass`, histogram `bins`, per-phase stats, and a per-counter block `{ [tag]: { sum, avg, min, max, p01, p99, last, count } }`) tagged with optional `{ label, engine, budgetMs }`. `summarizeCapture(decoded, meta?)` does the same from a decoded `.litecap`. `diffCaptures(baseline, candidate)` returns per-metric `{ base, cand, delta, pct }`. `checkRegression(baseline, candidate, tolerances?)` returns `{ ok, regressions, diff }`; `assertNoRegression(...)` throws a `RegressionError` (carrying `err.report`) when a gated metric worsens beyond tolerance. `DEFAULT_TOLERANCES` gates `frame.avg` and `frame.p99` at `+10%`.
 
 ## The `.litecap` format
 
@@ -156,13 +184,13 @@ A flat little-endian buffer. Frames and each phase are stored oldest-first.
 | Offset | Type | Field | Notes |
 |---|---|---|---|
 | `0` | `uint8[4]` | magic | `'L' 'C' 'A' 'P'` |
-| `4` | `uint8` | version | `1` or `2` |
+| `4` | `uint8` | version | `1`, `2`, or `3` |
 | `5` | `uint32` LE | count | samples per buffer |
 | `9` | `uint8` | phases | number of phase buffers |
 | `10` | `float32[count]` LE | frames | total frame times |
 | `10 + 4*count` | `float32[count]` LE | phase *p* | repeated for `p = 0 .. phases-1` |
 
-Total size is `10 + (count * 4) + (phases * count * 4)` bytes for v1. **v2** appends a self-describing trailer after the float data: each phase tag as a `uint8` length + UTF-8 bytes (registration order), then a `uint32` length + UTF-8 JSON metadata blob. `decodeCapture` bounds-checks every trailer read and still decodes v1 buffers (returning `tags: []`, `meta: null`), so older captures keep working with no consumer changes.
+Total size is `10 + (count * 4) + (phases * count * 4)` bytes for v1. **v2** appends a self-describing trailer after the float data: each phase tag as a `uint8` length + UTF-8 bytes (registration order), then a `uint32` length + UTF-8 JSON metadata blob. **v3** appends one more trailer after the meta blob when counters are present: a `uint8` counter count, each counter's `count` float32 samples (oldest-first), then each counter tag. A capture with no counters still emits **v2**, so older readers decode it unchanged. `decodeCapture` bounds-checks every trailer read and still decodes v1/v2 buffers (returning `tags: []` / `counters: []`, `meta: null`), so older captures keep working with no consumer changes.
 
 ## Capture comparison & regression gating
 
@@ -186,7 +214,7 @@ assertNoRegression(baseline, candidate, {
 });
 ```
 
-The summary is plain JSON, so a baseline is git-diffable and lives next to the test. `checkRegression()` is the non-throwing form when you want to report rather than fail. `fps` is higher-is-better and gated in the opposite direction automatically. Metric paths are `frame.<metric>` or `phase.<tag>.<metric>`.
+The summary is plain JSON, so a baseline is git-diffable and lives next to the test. `checkRegression()` is the non-throwing form when you want to report rather than fail. `fps` is higher-is-better and gated in the opposite direction automatically; counters are lower-is-better. Metric paths are `frame.<metric>`, `phase.<tag>.<metric>`, or `counter.<tag>.<metric>` (see [Deterministic counters](#deterministic-counters)).
 
 ## Recipes
 
@@ -236,12 +264,12 @@ This package is the focused core. Each layer below ships separately so the core 
 - **`lite-profiler-gl`** — a `lite-gl` HUD backend rendering thousands of frames across many phases in a single instanced draw.
 - **Diagnostic dashboard** — a live showcase profiling a real workload (a `lite-soa-particle-engine` / `lite-fx` storm), with `lite-hotkey` to toggle the overlay.
 
-Capture comparison and regression gating (`summarize` / `diffCaptures` / `assertNoRegression`) landed in the core in 1.1.0. A Perfetto / Chrome-trace exporter is under consideration as a fast-follow, but it needs a timeline-capture layer first: the rings store durations, not absolute timestamps or a frame-to-phase association, so a faithful flame chart is a data-model addition rather than a formatting shim.
+Capture comparison and regression gating (`summarize` / `diffCaptures` / `assertNoRegression`) landed in the core in 1.1.0; deterministic per-frame counters (`count` / `countAt`, `counter.<tag>.<metric>` gating, LiteCap v3) landed in 1.2.0. A Perfetto / Chrome-trace exporter is under consideration as a fast-follow, but it needs a timeline-capture layer first: the rings store durations, not absolute timestamps or a frame-to-phase association, so a faithful flame chart is a data-model addition rather than a formatting shim.
 
 ## Testing
 
 ```bash
-npm test             # node --test (32 tests, zero dependencies)
+npm test             # node --test (25 tests, zero dependencies)
 npm run bundle-check # esbuild ESM bundle sanity check
 ```
 

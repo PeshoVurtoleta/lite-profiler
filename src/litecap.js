@@ -13,16 +13,22 @@
  *   off 9  : phases   1 x uint8  = number of phase buffers
  *   off 10 : frames   count x float32          (oldest-first)
  *   ...    : phase p  count x float32 each      (oldest-first), p = 0..phases-1
- *   v2 trailer (only when version = 2):
+ *   v2 trailer (when version >= 2):
  *     tags   : per phase, uint8 len + len UTF-8 bytes  (registration order)
  *     meta   : uint32 len + len UTF-8 bytes (JSON; len 0 = none)
+ *   v3 counter trailer (only when version = 3):
+ *     numCounters : 1 x uint8
+ *     counter c   : count x float32 each (oldest-first), c = 0..numCounters-1
+ *     ctags       : per counter, uint8 len + len UTF-8 bytes (registration order)
+ *   Emit is v2 when no counters are registered (older readers still decode); a
+ *   capture that carries counters is v3.
  *
  * Copyright (c) Zahary Shinikchiev <shinikchiev@yahoo.com>
  * MIT License.
  */
 
 const MAGIC0 = 0x4C, MAGIC1 = 0x43, MAGIC2 = 0x41, MAGIC3 = 0x50; // 'LCAP'
-const VERSION = 2;            // current emit version
+const VERSION = 3;            // max emit version (v2 when no counters)
 const MIN_VERSION = 1;        // v1 still decodes
 const OFF_VERSION = 4;
 const OFF_COUNT = 5;
@@ -30,6 +36,7 @@ const OFF_NUM_PHASES = 9;
 const HEADER_SIZE = 10;
 const MAX_FRAMES = 1 << 20;   // ~1,048,576
 const MAX_PHASES = 64;
+const MAX_COUNTERS = 64;
 
 /** Public constants for advanced consumers. */
 export const LITECAP = Object.freeze({
@@ -37,7 +44,8 @@ export const LITECAP = Object.freeze({
     VERSION,
     HEADER_SIZE,
     MAX_FRAMES,
-    MAX_PHASES
+    MAX_PHASES,
+    MAX_COUNTERS
 });
 
 /**
@@ -85,7 +93,38 @@ export function encodeCapture(profiler, scratch = null, meta = null) {
     const metaBytes = meta != null ? enc.encode(JSON.stringify(meta)) : new Uint8Array(0);
     const metaTotal = 4 + metaBytes.length;
 
-    const byteLength = HEADER_SIZE + (count * 4) + (numPhases * count * 4) + tagsTotal + metaTotal;
+    // v3 counter section (emitted only when counters exist; otherwise the capture stays
+    // v2 and decodes in older readers).
+    const numCounters = profiler.counterCount || 0;
+    if (numCounters > MAX_COUNTERS) {
+        throw new RangeError(`encodeCapture: counter count exceeds limit (${numCounters} > ${MAX_COUNTERS})`);
+    }
+    const version = numCounters > 0 ? 3 : 2;
+    let counterTagBytes = null;
+    let counterSection = 0;
+    if (numCounters > 0) {
+        for (let cc = 0; cc < numCounters; cc++) {
+            if (profiler.counterAt(cc).count !== count) {
+                throw new Error(
+                    `encodeCapture: counter buffer desync at index ${cc}. ` +
+                    `Every registered counter is flushed on every endFrame().`
+                );
+            }
+        }
+        counterTagBytes = new Array(numCounters);
+        let ctagsTotal = 0;
+        for (let cc = 0; cc < numCounters; cc++) {
+            const b = enc.encode(profiler.counterTags[cc]);
+            if (b.length > 255) {
+                throw new RangeError(`encodeCapture: counter tag too long (${b.length} bytes > 255)`);
+            }
+            counterTagBytes[cc] = b;
+            ctagsTotal += 1 + b.length;
+        }
+        counterSection = 1 + (numCounters * count * 4) + ctagsTotal;
+    }
+
+    const byteLength = HEADER_SIZE + (count * 4) + (numPhases * count * 4) + tagsTotal + metaTotal + counterSection;
     const buffer = new ArrayBuffer(byteLength);
     const view = new DataView(buffer);
     const u8 = new Uint8Array(buffer);
@@ -94,7 +133,7 @@ export function encodeCapture(profiler, scratch = null, meta = null) {
     view.setUint8(1, MAGIC1);
     view.setUint8(2, MAGIC2);
     view.setUint8(3, MAGIC3);
-    view.setUint8(OFF_VERSION, VERSION);
+    view.setUint8(OFF_VERSION, version);
     view.setUint32(OFF_COUNT, count, true);
     view.setUint8(OFF_NUM_PHASES, numPhases);
 
@@ -116,6 +155,19 @@ export function encodeCapture(profiler, scratch = null, meta = null) {
     }
     view.setUint32(offset, metaBytes.length, true); offset += 4;
     u8.set(metaBytes, offset); offset += metaBytes.length;
+
+    if (version === 3) {
+        view.setUint8(offset, numCounters); offset += 1;
+        for (let cc = 0; cc < numCounters; cc++) {
+            profiler.counterAt(cc).copyTo(pad, 0);   // reuse the frame/phase scratch (Float32, len >= count)
+            for (let i = 0; i < count; i++) { view.setFloat32(offset, pad[i], true); offset += 4; }
+        }
+        for (let cc = 0; cc < numCounters; cc++) {
+            const b = counterTagBytes[cc];
+            view.setUint8(offset, b.length); offset += 1;
+            u8.set(b, offset); offset += b.length;
+        }
+    }
 
     return buffer;
 }
@@ -193,7 +245,32 @@ export function decodeCapture(input) {
         }
     }
 
-    return { version, count, numPhases, frames, phases, tags, meta };
+    let counters = [];
+    let counterTags = [];
+    if (version >= 3) {
+        if (offset + 1 > byteLength) throw new RangeError('decodeCapture: truncated counter header');
+        const numCounters = view.getUint8(offset); offset += 1;
+        if (numCounters > MAX_COUNTERS) throw new RangeError(`decodeCapture: counters exceed limit (${numCounters})`);
+        const need = numCounters * count * 4;
+        if (offset + need > byteLength) throw new RangeError('decodeCapture: truncated counter data');
+        counters = new Array(numCounters);
+        for (let cc = 0; cc < numCounters; cc++) {
+            const arr = new Float32Array(count);
+            for (let i = 0; i < count; i++) { arr[i] = view.getFloat32(offset, true); offset += 4; }
+            counters[cc] = arr;
+        }
+        const cdec = new TextDecoder();
+        counterTags = new Array(numCounters);
+        for (let cc = 0; cc < numCounters; cc++) {
+            if (offset + 1 > byteLength) throw new RangeError('decodeCapture: truncated counter tag table');
+            const len = view.getUint8(offset); offset += 1;
+            if (offset + len > byteLength) throw new RangeError('decodeCapture: truncated counter tag bytes');
+            counterTags[cc] = cdec.decode(new Uint8Array(buffer, byteOffset + offset, len));
+            offset += len;
+        }
+    }
+
+    return { version, count, numPhases, frames, phases, tags, meta, counters, counterTags };
 }
 
 /**

@@ -6,6 +6,7 @@ export declare const LITECAP: {
   readonly HEADER_SIZE: number;
   readonly MAX_FRAMES: number;
   readonly MAX_PHASES: number;
+  readonly MAX_COUNTERS: number;
 };
 
 export interface LiteCapData {
@@ -18,6 +19,10 @@ export interface LiteCapData {
   tags: string[];
   /** Embedded metadata (v2; null for v1 or when none was written). */
   meta: object | null;
+  /** Per-counter sample arrays (v3; empty for v1/v2). */
+  counters: Float32Array[];
+  /** Counter tags in registration order (v3; empty for v1/v2). */
+  counterTags: string[];
 }
 
 export declare function encodeCapture(profiler: Profiler, scratch?: Float32Array | null, meta?: object | null): ArrayBuffer | null;

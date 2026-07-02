@@ -10,24 +10,32 @@ core; reactive and GPU layers ship separately.
   the hot path, reading from those buffers.
 
 ## Exports
-- Profiler(capacity=1024, phases=[]) - beginFrame()/endFrame(),
+- Profiler(capacity=1024, phases=[], counters=[]) - beginFrame()/endFrame(),
   begin(tag)/end(tag), beginAt(handle)/endAt(handle), handle(tag), frame,
-  phase(tag), phaseAt(handle), reset(), destroy().
+  phase(tag), phaseAt(handle), reset(), destroy(). Optional counters:
+  count(tag,n=1) / countAt(handle,n=1) accumulate per frame (flushed on endFrame),
+  counterHandle(tag), counterTagOf(handle), counter(tag), counterAt(handle), counterCount.
 - FrameHistogram - update(buffer), bins, total, modeIndex, jankRatio,
   spikeRatio, classify() -> FrameClass.{STEADY,SPIKING,THROTTLED}.
 - encodeCapture(profiler, scratch?, meta?) -> ArrayBuffer|null (v2 embeds phase
-  tags + optional meta), decodeCapture(arrayBufferOrView) ->
-  {version,count,numPhases,frames,phases,tags,meta} (v1 decodes: tags[],meta null),
+  tags + optional meta; v3 when counters exist), decodeCapture(arrayBufferOrView) ->
+  {version,count,numPhases,frames,phases,tags,meta,counters,counterTags}
+  (v1/v2 decode with counters:[],counterTags:[]),
   downloadCapture(buffer, filename?), LITECAP constants.
 - summarize(profiler, meta?) -> CaptureSummary {schema,label,engine,timestamp,
   budgetMs,frameCount,capacity,frame:{avg,min,max,p01,p99,fps,jankRatio,spikeRatio,
-  frameClass,bins},phases:{[tag]:{avg,min,max,p01,p99,last,count}}}.
+  frameClass,bins},phases:{[tag]:{avg,min,max,p01,p99,last,count}},
+  counters:{[tag]:{sum,avg,min,max,p01,p99,last,count}}}.
   summarizeCapture(decoded, meta?) -> CaptureSummary from a decoded LiteCap.
 - diffCaptures(baseline, candidate) -> per-metric {base,cand,delta,pct}.
   checkRegression(baseline, candidate, tolerances?) -> {ok,regressions,diff}.
   assertNoRegression(baseline, candidate, tolerances?) throws RegressionError
   (err.report) past tolerance. DEFAULT_TOLERANCES {frame.avg:0.10,frame.p99:0.10},
-  SUMMARY_SCHEMA. Metric paths: frame.<m> or phase.<tag>.<m>; fps higher-better.
+  SUMMARY_SCHEMA (=2). Metric paths: frame.<m>, phase.<tag>.<m>, or counter.<tag>.<m>.
+  fps is higher-better; counters are lower-is-better and deterministic, so gate them at
+  zero tolerance for an exact ceiling ({'counter.floatsUploaded.max':0}). A counter the
+  baseline tracked that the candidate stops reporting is a regression (reason: 'metric
+  missing in candidate'); frame/phase paths keep the lenient skip.
 - FrameBudget, budgetMs(targetFps), isOverBudget(frameMs, targetFps).
 - MeterHud(canvas, profiler, options?) - render(), resize(), setMaxMs(),
   destroy().
@@ -35,6 +43,10 @@ core; reactive and GPU layers ship separately.
 ## Contracts
 - Phases are registered once at construction; dynamic registration is not
   supported (it would allocate).
+- Counters are likewise registered once. count()/countAt() accumulate within a
+  frame and flush one value per counter on endFrame(); a frame with no count()
+  records 0. Counters are integers on Float32 rings: per-frame values are exact
+  to 2^24, and the summary's counter sum is an exact Float64 total past that.
 - begin/end (or beginAt/endAt) must be paired each frame; every registered
   phase must be reported every frame for encodeCapture() to succeed.
 - Buffers store Float32; push only finite numbers.

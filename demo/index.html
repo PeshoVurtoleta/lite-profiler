@@ -8,12 +8,13 @@
     <script type="importmap">
 {
   "imports": {
-    "@zakkster/lite-profiler": "/index.js",
-    "@zakkster/lite-ring-buffer": "/node_modules/@zakkster/lite-ring-buffer/RingBuffer.js",
-    "@zakkster/lite-stats-math": "/node_modules/@zakkster/lite-stats-math/StatsMath.js",
-    "@zakkster/lite-canvas-graph": "/node_modules/@zakkster/lite-canvas-graph/CanvasGraph.js"
+    "@zakkster/lite-profiler": "../index.js",
+    "@zakkster/lite-ring-buffer": "https://esm.sh/@zakkster/lite-ring-buffer@1",
+    "@zakkster/lite-stats-math": "https://esm.sh/@zakkster/lite-stats-math@1",
+    "@zakkster/lite-canvas-graph": "https://esm.sh/@zakkster/lite-canvas-graph@1"
   }
 }
+
 
     </script>
 
@@ -115,6 +116,45 @@
 
         .run[data-run="paused"] {
             color: var(--muted);
+        }
+
+        .xlink {
+            font-size: 0.7rem;
+            letter-spacing: 0.08em;
+            color: var(--phosphor-dim);
+            text-decoration: none;
+            margin-left: auto;
+            margin-right: 1rem;
+        }
+
+        @media (hover: hover) {
+            .xlink:hover {
+                color: var(--phosphor);
+            }
+        }
+
+        .budgetline {
+            margin-top: 0.55rem;
+            font-size: 0.68rem;
+            color: var(--muted);
+            font-variant-numeric: tabular-nums;
+        }
+
+        .budgetline b {
+            color: var(--phosphor);
+            font-weight: 600;
+        }
+
+        .budgetline b.warn {
+            color: var(--amber);
+        }
+
+        .phase[data-ghost="1"] .top .name {
+            color: var(--amber);
+        }
+
+        .phase[data-ghost="1"] .track > i {
+            background: color-mix(in oklch, var(--amber) 55%, var(--edge));
         }
 
         main {
@@ -405,6 +445,7 @@
 <div class="app">
     <header>
         <h1>lite-profiler <span>// diagnostic dashboard</span></h1>
+        <a class="xlink" href="compare.html">capture vs baseline &rarr;</a>
         <div class="run" id="run" data-run="running">RUNNING</div>
     </header>
 
@@ -423,14 +464,16 @@
             <div class="panel">
                 <h2>Frame</h2>
                 <div class="metrics">
-                    <div class="metric"><span class="v"><span id="fps">0</span><small>fps</small></span><span class="k">avg</span>
+                    <div class="metric"><span class="v"><span id="fps">0</span><small>fps</small></span><span class="k">display</span>
                     </div>
-                    <div class="metric"><span class="v"><span id="p50">0</span><small>ms</small></span><span class="k">p50</span>
+                    <div class="metric"><span class="v"><span id="p50">0</span><small>ms</small></span><span class="k">p50 work</span>
                     </div>
-                    <div class="metric"><span class="v"><span id="p99">0</span><small>ms</small></span><span class="k">p99</span>
+                    <div class="metric"><span class="v"><span id="p99">0</span><small>ms</small></span><span class="k">p99 work</span>
                     </div>
-                    <div class="metric"><span class="v"><span id="fmax">0</span><small>ms</small></span><span class="k">max</span>
+                    <div class="metric"><span class="v"><span id="fmax">0</span><small>ms</small></span><span class="k">max work</span>
                     </div>
+                </div>
+                <div class="budgetline">work avg <b id="workAvg">0.00</b> ms of 16.7 ms budget (<b id="budgetPct">0</b>%)
                 </div>
                 <canvas id="frameGraph"></canvas>
             </div>
@@ -448,7 +491,9 @@
             <div class="panel">
                 <p class="hint">A <b>steady</b> flock sits under the 16.7&thinsp;ms budget. Drag boids up
                     until frames stay over budget &rarr; <b>throttled</b>. Hit <b>inject GC</b> to scatter
-                    sparse hitches with calm phases &rarr; <b>spiking</b> (a pause your code didn't cause).</p>
+                    sparse hitches with calm phases &rarr; <b>spiking</b>. The <b>unattributed</b> row is
+                    frame time no phase claims &mdash; GC pauses live there: phases stay flat while it grows.
+                    Export writes a v2 <code>.litecap</code> with phase tags + run metadata embedded.</p>
             </div>
         </aside>
     </main>
@@ -498,6 +543,8 @@
     const $pause = document.getElementById('pause');
     const $reset = document.getElementById('reset');
     const $export = document.getElementById('export');
+    const $workAvg = document.getElementById('workAvg');
+    const $budgetPct = document.getElementById('budgetPct');
 
     /* ---- constants ---- */
     const MAX = 5000;
@@ -521,9 +568,14 @@
     };
     const hist = new FrameHistogram();
     const stats = new StatsMath(profiler.capacity);
-    const fOut = {avg: 0, min: 0, max: 0, p01: 0, p99: 0};
+    const fOut = {avg: 0, min: 0, max: 0, p01: 0, p99: 0, p50: 0};
     const pOut = {avg: 0, min: 0, max: 0, p01: 0, p99: 0};
     const exportScratch = new Float32Array(profiler.capacity);
+
+    // real display cadence (rAF deltas) -- the honest fps, distinct from 1000/avg(work)
+    const RAF_N = 128, RAF_MASK = 127;
+    const rafRing = new Float64Array(RAF_N);
+    let rafHead = 0, rafCount = 0, lastRafTs = 0;
 
     /* ---- boid state (SoA) ---- */
     const px = new Float32Array(MAX), py = new Float32Array(MAX);
@@ -586,6 +638,20 @@
         });
     }
 
+    // ghost row: frame time not claimed by any phase. Under GC injection the phases
+    // stay flat while this grows -- the visual proof the pause is not workload code.
+    const ghostRow = document.createElement('div');
+    ghostRow.className = 'phase';
+    ghostRow.dataset.ghost = '1';
+    ghostRow.dataset.hot = '0';
+    ghostRow.innerHTML =
+        '<div class="top"><span class="name">unattributed</span>' +
+        '<span class="nums"><b class="cur">0.00</b> ms avg</span></div>' +
+        '<div class="track"><i></i></div>';
+    $phases.appendChild(ghostRow);
+    const $ghostCur = ghostRow.querySelector('.cur');
+    const $ghostBar = ghostRow.querySelector('.track > i');
+
     /* ---- sizing ---- */
     function resize() {
         DPR = Math.min(window.devicePixelRatio || 1, 2);
@@ -605,8 +671,26 @@
         if (hud) hud.destroy();
         hud = new MeterHud($frameGraph, profiler, {
             width: Math.floor(gr.width), height: Math.floor(gr.height),
-            maxMs: 50, stroke: '#00ffc6', background: '#0a1712'
+            maxMs: 50, stroke: '#00ffc6', background: '#0a1712',
+            // Full-resolution polyline, not per-column min/max. With a 512-sample ring on a
+            // sub-512px panel, decimation re-buckets every sample each frame, so a lone GC
+            // spike jumps columns on an irregular cadence (512/width is non-integer) and the
+            // trace strobes. Direct rendering maps index->x continuously, so the same spike
+            // scrolls left by a steady sub-pixel step: smooth under bimodal GC data.
+            decimate: false,
+            readout: false      // own readout below; the built-in one prints 1000/work as "fps"
         });
+        // The trace plots per-frame WORK time (beginFrame..endFrame). 1000/work is throughput
+        // CAPACITY, not the frame rate: 2.7ms of work is ~370fps of headroom while the display
+        // actually runs at whatever rAF delivers (DISPLAY in the FRAME panel). Print the last
+        // work sample and the scale top here; the honest frame rate stays in the panel.
+        hud.graph.labelBitmapHook = (ctx, maxValue, w) => {
+            const last = profiler.frame.peekNewest();
+            ctx.fillStyle = '#00ffc6';
+            ctx.font = '12px monospace';
+            ctx.fillText(last.toFixed(1) + 'ms work', 6, 14);
+            ctx.fillText(maxValue.toFixed(0) + 'ms', w - 38, 14);
+        };
     }
 
     /* ---- init boids ---- */
@@ -747,11 +831,18 @@
     /* ---- GC pressure injection (sparse hitches with calm phases) ---- */
     let _sink = null;
 
-    function burnGarbage() {
-        // allocate-and-drop a few thousand short-lived objects to provoke GC pauses
-        for (let k = 0; k < 7000; k++) {
-            _sink = {a: Math.random(), b: Math.random(), c: [k, k + 1], d: 'g' + k};
-        }
+    // Burn until `ms` of wall clock has elapsed, in allocation chunks. The drops
+    // provoke real GC; the time floor guarantees the bracketed frame crosses the
+    // 16ms jank bin on any hardware (a fixed object count is machine-dependent --
+    // 26k objects cost ~12ms on one box and ~4ms on another, and the classifier
+    // never sees the hitch).
+    function burnGarbageFor(ms) {
+        const end = performance.now() + ms;
+        do {
+            for (let k = 0; k < 2500; k++) {
+                _sink = {a: Math.random(), b: Math.random(), c: [k, k + 1], d: 'g' + k};
+            }
+        } while (performance.now() < end);
         _sink = null;
     }
 
@@ -760,6 +851,7 @@
         if (profiler.frame.count === 0) return;
 
         stats.compute(profiler.frame, fOut);
+        stats.quantile(profiler.frame, 0.5, fOut, 'p50');    // real median, not avg
         hist.update(profiler.frame);
         const cls = hist.classify();
         const jank = hist.jankRatio, spike = hist.spikeRatio;
@@ -772,11 +864,24 @@
         $jank.textContent = (jank * 100).toFixed(0) + '%';
         $spike.textContent = (spike * 100).toFixed(0) + '%';
 
-        const fps = fOut.avg > 0 ? Math.round(1000 / fOut.avg) : 0;
+        // display fps from real rAF cadence (1000/avg(work) is throughput capacity, not this)
+        let fps = 0;
+        if (rafCount >= 8) {
+            let sum = 0;
+            for (let i = 0; i < rafCount; i++) sum += rafRing[i];
+            const d = sum / rafCount;
+            fps = d > 0 ? Math.round(1000 / d) : 0;
+        }
         $fps.textContent = fps;
-        $p50.textContent = fOut.avg.toFixed(1);
+        $p50.textContent = fOut.p50.toFixed(1);
         $p99.textContent = fOut.p99.toFixed(1);
         $fmax.textContent = fOut.max.toFixed(1);
+
+        // budget usage: how much of the 16.7ms frame the measured work consumes
+        const used = (fOut.avg / BUDGET_60) * 100;
+        $workAvg.textContent = fOut.avg.toFixed(2);
+        $budgetPct.textContent = used.toFixed(0);
+        $budgetPct.className = used > 100 ? 'warn' : '';
 
         // histogram bars normalised to the tallest bin
         let maxBin = 1;
@@ -787,21 +892,51 @@
         }
 
         // per-phase: current + p99, bar as share of a 33ms reference
+        let phaseAvgSum = 0;
         for (let i = 0; i < phaseList.length; i++) {
             const ph = phaseList[i];
             stats.compute(ph.buf, pOut);
+            phaseAvgSum += pOut.avg;
             ph.cur.textContent = ph.buf.peekNewest().toFixed(2);
             ph.p99.textContent = pOut.p99.toFixed(2);
             ph.bar.style.setProperty('--w', Math.min(100, (pOut.p99 / 33) * 100).toFixed(1));
             ph.row.dataset.hot = pOut.p99 > BUDGET_60 ? '1' : '0';
         }
+
+        // unattributed = frame avg minus the sum of phase avgs (GC, layout, browser work)
+        let ghost = fOut.avg - phaseAvgSum;
+        if (ghost < 0) ghost = 0;
+        $ghostCur.textContent = ghost.toFixed(2);
+        $ghostBar.style.setProperty('--w', Math.min(100, (ghost / 33) * 100).toFixed(1));
+        ghostRow.dataset.hot = ghost > BUDGET_60 ? '1' : '0';
     }
 
     /* ---- main loop ---- */
-    function frame() {
+    // GC injection tuning. The gap is JITTERED because real GC is aperiodic; a strictly
+    // periodic burst train would read as an unnaturally regular comb (and used to alias
+    // into a per-column strobe on the HUD -- that part is handled structurally now, by the
+    // trace's decimate:false). The 4s window is what lets jank clear the classifier's
+    // 5% floor inside a 512-frame ring (a 1.4s burst tops out near 3% -- SPIKING
+    // was unreachable); the verdict then decays back to STEADY as the window rolls.
+    const GC_WINDOW_MS = 4000;
+    const GC_BURST_MS = 22;                    // one missed-60fps frame: lands in the 16-33ms bin
+    const GC_GAP_MIN = 3, GC_GAP_JITTER = 5;   // next burst 3-7 frames out
+    let nextGcFrame = 0;
+    let frameIdx = 0;
+
+    function frame(ts) {
+        frameIdx++;
         const gcOn = gcUntil > performance.now();
 
         if (!paused) {
+            // real display cadence sample (frozen while paused, like the buffers)
+            if (lastRafTs !== 0) {
+                rafRing[rafHead] = ts - lastRafTs;
+                rafHead = (rafHead + 1) & RAF_MASK;
+                if (rafCount < RAF_N) rafCount++;
+            }
+            lastRafTs = ts;
+
             profiler.beginFrame();
 
             profiler.beginAt(H.spatial);
@@ -817,10 +952,17 @@
             render();
             profiler.endAt(H.render);
 
-            // GC pause lands in total frame time but NOT in any single phase
-            if (gcOn) burnGarbage();
+            // GC pause lands in total frame time but NOT in any single phase.
+            // Sparse bursts on a jittered schedule: the bimodal (SPIKING)
+            // signature without the periodic comb that strobes the HUD.
+            if (gcOn && frameIdx >= nextGcFrame) {
+                burnGarbageFor(GC_BURST_MS);
+                nextGcFrame = frameIdx + GC_GAP_MIN + (Math.random() * GC_GAP_JITTER | 0);
+            }
 
             profiler.endFrame();
+        } else {
+            lastRafTs = 0;      // do not count the pause gap as a frame delta
         }
 
         hud.render();
@@ -842,22 +984,37 @@
     }
 
     /* ---- controls ---- */
+    function resetStats() {
+        profiler.reset();
+        rafHead = 0;
+        rafCount = 0;
+        lastRafTs = 0;
+    }
+
     $count.addEventListener('input', () => {
         active = +$count.value;
         $countVal.textContent = String(active);
     });
+    // slider release = new workload scenario: clear the window so the classifier
+    // and percentiles never mix two boid counts.
+    $count.addEventListener('change', resetStats);
     $gc.addEventListener('click', () => {
-        gcUntil = performance.now() + 1400;
+        gcUntil = performance.now() + GC_WINDOW_MS;
+        nextGcFrame = frameIdx;               // first hitch lands on the next frame
     });
     $pause.addEventListener('click', () => {
         paused = !paused;
         $pause.textContent = paused ? 'RESUME' : 'PAUSE';
     });
-    $reset.addEventListener('click', () => {
-        profiler.reset();
-    });
+    $reset.addEventListener('click', resetStats);
     $export.addEventListener('click', () => {
-        const buf = encodeCapture(profiler, exportScratch);
+        // v2 capture: phase tags travel in the file; meta makes it self-describing
+        const buf = encodeCapture(profiler, exportScratch, {
+            label: 'boids-' + active,
+            engine: 'boids-demo',
+            budgetMs: BUDGET_60,
+            timestamp: Date.now()
+        });
         if (buf) downloadCapture(buf, 'boids-session.litecap');
     });
     window.addEventListener('resize', resize);
