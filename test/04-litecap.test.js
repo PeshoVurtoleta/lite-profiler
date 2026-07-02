@@ -27,7 +27,11 @@ describe('LiteCap', () => {
     const buf = encodeCapture(p);
     assert.ok(buf instanceof ArrayBuffer);
     const data = decodeCapture(buf);
-    assert.equal(data.version, LITECAP.VERSION);
+    // No counters registered -> minimum-version emit is v2 (so 1.1.0 readers still
+    // decode it). LITECAP.VERSION is the max/current format version (3, the counter
+    // trailer); a with-counter capture reports 3. See 09-litecap-v3.
+    assert.equal(data.version, 2);
+    assert.ok(data.version <= LITECAP.VERSION);
     assert.equal(data.count, 20);
     assert.equal(data.numPhases, 2);
     const expFrames = new Float32Array(20); p.frame.copyTo(expFrames, 0);

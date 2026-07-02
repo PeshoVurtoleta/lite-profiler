@@ -7,7 +7,7 @@
 [![npm total downloads](https://img.shields.io/npm/dt/@zakkster/lite-profiler?style=for-the-badge&color=blue)](https://www.npmjs.com/package/@zakkster/lite-profiler)
 ![Zero-GC](https://img.shields.io/badge/Hot_Path-Zero_GC-brightgreen?style=for-the-badge)
 ![TypeScript](https://img.shields.io/badge/TypeScript-Full_Types-informational?style=for-the-badge)
-![Tests](https://img.shields.io/badge/Tests-25_passing-brightgreen?style=for-the-badge)
+![Tests](https://img.shields.io/badge/Tests-57_passing-brightgreen?style=for-the-badge)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
 
 Always-on frame and per-phase profiling for HTML5 game loops. `performance.now()` into power-of-two ring buffers, single-pass percentiles, a frame-time classifier that tells a GC spike apart from a sustained throttle, deterministic per-frame command counters that gate exactly, and a binary capture format you can serialize, ship, and read back.
@@ -269,7 +269,7 @@ Capture comparison and regression gating (`summarize` / `diffCaptures` / `assert
 ## Testing
 
 ```bash
-npm test             # node --test (25 tests, zero dependencies)
+npm test             # node --test (57 tests, zero dependencies)
 npm run bundle-check # esbuild ESM bundle sanity check
 ```
 
