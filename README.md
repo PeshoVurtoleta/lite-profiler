@@ -165,7 +165,11 @@ Zero-GC frame and per-phase timing. Phases are registered once at construction; 
 ### `FrameHistogram` — distribution + classifier
 `update(buffer)` (zero-alloc, reuses `bins`), `bins: Uint32Array(7)`, `total`, `modeIndex`, `jankRatio`, `spikeRatio`, `classify(): FrameClass`. `FrameClass = { STEADY, SPIKING, THROTTLED }`.
 
-### `encodeCapture` / `decodeCapture` — `.litecap` binary IO
+### `TimelineRecorder` — absolute-time capture (flame-chart prerequisite)
+
+Opt-in, independent of `Profiler`. `recordFrameBoundary(t?)`, `beginSpan`/`endSpan` (+ `…At(handle)`), `mark(tag,t?)`; accessors `frameBoundaries`, `spanT0`/`spanT1`, `instantTime`. Own `Float64Array` rings so absolute timestamps survive hour-scale sessions. See [Timeline capture](#timeline-capture-flame-chart-prerequisite).
+
+### `encodeCapture` / `decodeCapture` / `encodeTimelineCapture` — `.litecap` binary IO
 `encodeCapture(profiler, scratch?, meta?) -> ArrayBuffer | null` (pass a reusable `Float32Array` scratchpad to avoid allocation; `meta` is optional JSON-serializable provenance such as `{ engine, label }`; returns `null` if no frames). `decodeCapture(arrayBufferOrView) -> { version, count, numPhases, frames, phases, tags, meta, counters, counterTags }` — validates magic, version, and byte length before reading (a v3 capture carries counter data; v1/v2 decode with `counters: []`). `downloadCapture(buffer, filename?)` for browsers. `LITECAP` exposes the format constants.
 
 ### `FrameBudget` / `budgetMs` / `isOverBudget` — budgets
@@ -184,13 +188,52 @@ A flat little-endian buffer. Frames and each phase are stored oldest-first.
 | Offset | Type | Field | Notes |
 |---|---|---|---|
 | `0` | `uint8[4]` | magic | `'L' 'C' 'A' 'P'` |
-| `4` | `uint8` | version | `1`, `2`, or `3` |
+| `4` | `uint8` | version | `1`, `2`, `3`, or `4` |
 | `5` | `uint32` LE | count | samples per buffer |
 | `9` | `uint8` | phases | number of phase buffers |
 | `10` | `float32[count]` LE | frames | total frame times |
 | `10 + 4*count` | `float32[count]` LE | phase *p* | repeated for `p = 0 .. phases-1` |
 
-Total size is `10 + (count * 4) + (phases * count * 4)` bytes for v1. **v2** appends a self-describing trailer after the float data: each phase tag as a `uint8` length + UTF-8 bytes (registration order), then a `uint32` length + UTF-8 JSON metadata blob. **v3** appends one more trailer after the meta blob when counters are present: a `uint8` counter count, each counter's `count` float32 samples (oldest-first), then each counter tag. A capture with no counters still emits **v2**, so older readers decode it unchanged. `decodeCapture` bounds-checks every trailer read and still decodes v1/v2 buffers (returning `tags: []` / `counters: []`, `meta: null`), so older captures keep working with no consumer changes.
+Total size is `10 + (count * 4) + (phases * count * 4)` bytes for v1. **v2** appends a self-describing trailer after the float data: each phase tag as a `uint8` length + UTF-8 bytes (registration order), then a `uint32` length + UTF-8 JSON metadata blob. **v3** appends one more trailer after the meta blob when counters are present: a `uint8` counter count, each counter's `count` float32 samples (oldest-first), then each counter tag. A capture with no counters still emits **v2**, so older readers decode it unchanged. **v4** appends a timeline trailer after the counter section when a `TimelineRecorder` with data is serialized: the absolute frame boundaries, then each span lane (`tag`, pair count, `t0[]`, `t1[]`) and each instant lane (`tag`, mark count, `times[]`), all `float64`. `decodeCapture` bounds-checks every trailer read and still decodes v1–v3 buffers (returning `tags: []` / `counters: []` / `frameBoundaries: null`, `meta: null`), so older captures keep working with no consumer changes.
+
+**Version discipline.** Emit is the lowest version that fits: v2 (no counters, no timeline), v3 (counters), v4 (timeline with data). A timeline-free capture is **byte-identical** to a v2/v3 one — older readers are unaffected. Absolute timestamps are `float64` by necessity: a session open for hours pushes `performance.now()` past the point where a `float32` ULP exceeds a millisecond, so a `float32` span start would be quantized away.
+
+## Timeline capture (flame-chart prerequisite)
+
+The core `Profiler` stores **durations** — `now - start` per phase. Durations alone can't reconstruct a flame chart: you also need to know **when** each span began on a shared clock. `TimelineRecorder` captures that missing axis.
+
+```js
+import { TimelineRecorder, encodeCapture } from '@zakkster/lite-profiler';
+
+// Opt-in, independent of Profiler. Register span + instant lanes once.
+const tl = new TimelineRecorder(1024, ['physics', 'render'], ['gc']);
+
+function frame() {
+  tl.recordFrameBoundary();               // absolute frame start
+
+  tl.beginSpan('physics'); step(); tl.endSpan('physics');
+  tl.beginSpan('render');  draw(); tl.endSpan('render');
+
+  if (collectedGarbage) tl.mark('gc');    // instant event
+}
+
+// Serialize alongside the profiler → LiteCap v4 (durations + absolute time in one file).
+const buf = encodeCapture(profiler, scratch, { label: 'session' }, tl);
+```
+
+It's a separate object from `Profiler` — use it standalone (`encodeTimelineCapture(tl)`) or pass it as the fourth argument to `encodeCapture`. The hot path allocates nothing; samples land in preallocated rings.
+
+**Why its own rings.** `TimelineRecorder` uses raw `Float64Array` rings rather than the shared `RingBuffer`, which is `Float32`. That's correct for small duration deltas but fatal for *absolute* time — an hour into a session, `performance.now()` is large enough that a `float32` ULP exceeds a millisecond, so a sub-ms span start would be silently quantized away. (This is the same reason `Profiler` keeps its phase *start* timestamps in a `Float64Array`.)
+
+Reading back:
+
+```js
+const cap = decodeCapture(buf);
+// cap.frameBoundaries : Float64Array of absolute frame starts
+// cap.spanTags[i], cap.spanT0[i], cap.spanT1[i] : lane i's absolute t0/t1 pairs
+// cap.instantTags[i], cap.instantTimes[i]       : lane i's absolute marks
+const durations = cap.spanT1[0].map((t1, k) => t1 - cap.spanT0[0][k]);
+```
 
 ## Capture comparison & regression gating
 
@@ -264,7 +307,7 @@ This package is the focused core. Each layer below ships separately so the core 
 - **`lite-profiler-gl`** — a `lite-gl` HUD backend rendering thousands of frames across many phases in a single instanced draw.
 - **Diagnostic dashboard** — a live showcase profiling a real workload (a `lite-soa-particle-engine` / `lite-fx` storm), with `lite-hotkey` to toggle the overlay.
 
-Capture comparison and regression gating (`summarize` / `diffCaptures` / `assertNoRegression`) landed in the core in 1.1.0; deterministic per-frame counters (`count` / `countAt`, `counter.<tag>.<metric>` gating, LiteCap v3) landed in 1.2.0. A Perfetto / Chrome-trace exporter is under consideration as a fast-follow, but it needs a timeline-capture layer first: the rings store durations, not absolute timestamps or a frame-to-phase association, so a faithful flame chart is a data-model addition rather than a formatting shim.
+Capture comparison and regression gating (`summarize` / `diffCaptures` / `assertNoRegression`) landed in the core in 1.1.0; deterministic per-frame counters (`count` / `countAt`, `counter.<tag>.<metric>` gating, LiteCap v3) landed in 1.2.0. The timeline-capture layer that a flame chart needs landed in 1.3.0: `TimelineRecorder` records absolute `performance.now()` span pairs, frame boundaries, and instant marks (LiteCap v4). A Perfetto / Chrome-trace exporter is now a formatting shim over that data model rather than a data-model addition, and is the natural fast-follow.
 
 ## Testing
 

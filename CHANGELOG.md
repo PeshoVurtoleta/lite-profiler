@@ -3,6 +3,57 @@
 All notable changes to `@zakkster/lite-profiler` are documented here.
 The format follows Keep a Changelog; this project adheres to Semantic Versioning.
 
+## [1.3.0] - 2026-07-14
+
+Timeline capture layer. The core rings store DURATIONS; a flame chart also needs to
+know WHEN each span started on a shared clock. `TimelineRecorder` captures that missing
+axis — absolute `performance.now()` t0/t1 span pairs, frame boundaries, and instant
+marks — which is the prerequisite for any Perfetto / Chrome-trace / flame-chart exporter.
+Fully additive: a capture with no timeline is byte-identical to a 1.2.0 capture.
+
+### Added
+- **`TimelineRecorder(capacity?, spanTags?, instantTags?)`** — opt-in, independent of
+  `Profiler` (use standalone or alongside). Zero-GC hot path, static tag registration,
+  power-of-two capacity, `reset()` / `destroy()` — every convention mirrors `Profiler`.
+  - `recordFrameBoundary(t?)`, `beginSpan(tag,t0?)` / `endSpan(tag,t1?)` (+ `…At(handle)`
+    fast forms), `mark(tag,t?)` for instants. Handles via `spanHandle` / `instantHandle`.
+  - Accessors return the live ring: `frameBoundaries`, `spanT0(tag)` / `spanT1(tag)`,
+    `instantTime(tag)`, plus `…At(handle)` forms. `copyTo` unwinds oldest-first.
+  - **Its own raw `Float64Array` rings**, not the shared `RingBuffer`. The shared ring is
+    Float32, which is right for small deltas but fatal for absolute time: an hour into a
+    session `performance.now()` is large enough that a Float32 ULP exceeds a millisecond
+    and a sub-ms span start is quantized away (measured ~44 s of error at a realistic
+    `timeOrigin`). `profiler.js` documents exactly this tension for its own `_starts`.
+- **LiteCap v4** — a timeline trailer after the v3 counter section: frame boundaries,
+  then per span lane `{ tag, pairCount, t0[], t1[] }`, then per instant lane
+  `{ tag, markCount, times[] }`, all `float64`. `encodeCapture(profiler, scratch, meta,
+  timeline)` gains an optional fourth argument; `encodeTimelineCapture(timeline, meta?)`
+  serializes a timeline with no active profiler. `decodeCapture` returns
+  `frameBoundaries`, `spanTags`, `spanT0[]`, `spanT1[]`, `instantTags`, `instantTimes[]`.
+- `LITECAP` advertises `MAX_SPAN_LANES`, `MAX_INSTANT_LANES`, `MAX_TIMELINE_SAMPLES`.
+
+### Changed
+- `LITECAP.VERSION` → **4** (the max emit version). **Version discipline is unchanged
+  and strict:** emit the LOWEST version that fits the data. No timeline and no counters →
+  v2. Counters → v3. A `TimelineRecorder` *with samples* → v4. An empty recorder does
+  **not** bump the version, and a timeline-free capture is byte-for-byte identical to a
+  1.2.0 capture — so older readers are unaffected. A v4 capture is correctly *rejected*
+  by a v3-capped reader (hard "unsupported version" error), never silently truncated to
+  a blank timeline.
+
+### Fixed
+- The counter section is now written whenever `version >= 3`, even when zero counters are
+  registered (a v4 timeline-only capture). Under v3 the section's presence was equivalent
+  to "counters exist"; v4 breaks that equivalence, and the 1-byte counter-count header
+  must still be present to keep the decoder's `version >= 3` read aligned.
+
+### Tested
+- 18 new checks (82 → 100): Float64 round-trip at a realistic `now()` magnitude,
+  oldest-first ring wrap, begin/end pairing edge cases, full v4 encode/decode of frames +
+  spans + instants + coexisting counters, empty-lane round-trip, byte-identical
+  no-timeline capture, empty-recorder-does-not-bump, standalone `encodeTimelineCapture`,
+  and truncated-trailer rejection.
+
 ## [1.2.0] - 2026-07-02
 
 Counter channel. Deterministic per-frame command counters (draw calls, floats

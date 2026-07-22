@@ -54,3 +54,48 @@ core; reactive and GPU layers ship separately.
 ## Dependencies
 @zakkster/lite-ring-buffer, @zakkster/lite-stats-math (analysis),
 @zakkster/lite-canvas-graph (MeterHud). All zero-runtime-dep siblings.
+
+## v1.3.0 — timeline capture layer (flame-chart prerequisite)
+
+WHY. The core Profiler stores DURATIONS (now - start) in Float32 rings. A flame chart also
+needs WHEN each span started on a shared clock. TimelineRecorder captures that missing axis:
+absolute performance.now() t0/t1 span pairs, frame boundaries, and instant marks.
+
+TimelineRecorder(capacity?, spanTags?, instantTags?): opt-in, INDEPENDENT of Profiler (use
+standalone or alongside). Zero-GC hot path, static tag registration, power-of-two capacity,
+reset()/destroy() — mirrors Profiler exactly.
+  recordFrameBoundary(t?)                     -> absolute frame start
+  beginSpan(tag,t0?) / endSpan(tag,t1?)       -> one t0/t1 pair per pairing, recorded on end
+  beginSpanAt(h,t0?) / endSpanAt(h,t1?)       -> handle fast-path
+  mark(tag,t?) / markAt(h,t?)                 -> instant events
+  spanHandle(tag) / instantHandle(tag)        -> stable integer handles (-1 if unknown)
+  accessors (return the live Float64 ring, copyTo unwinds oldest-first):
+    frameBoundaries, spanT0(tag)/spanT1(tag), instantTime(tag), + ...At(handle) forms
+Leniency matches Profiler: unknown tags are no-ops; end-without-begin is ignored; a fresh
+begin overwrites an unpaired one (last-open-wins).
+
+CRITICAL — own Float64 rings, NOT the shared RingBuffer. RingBuffer is Float32: right for
+small duration deltas, fatal for ABSOLUTE time. An hour into a session performance.now() is
+large enough that a Float32 ULP exceeds 1ms, so a sub-ms span start would be quantized away
+(measured ~44s error at a realistic timeOrigin). profiler.js documents this same tension for
+its own _starts Float64Array.
+
+LiteCap v4. encodeCapture(profiler, scratch?, meta?, timeline?) — optional 4th arg. When the
+recorder carries data the capture is v4 with a timeline trailer (frame boundaries; per span
+lane { tag, pairCount, t0[], t1[] }; per instant lane { tag, markCount, times[] }; all float64).
+encodeTimelineCapture(timeline, meta?) serializes a timeline with no active profiler (null if
+empty). decodeCapture returns frameBoundaries, spanTags, spanT0[], spanT1[], instantTags,
+instantTimes[] (null/[] for pre-v4 captures).
+
+VERSION DISCIPLINE (unchanged, strict). Emit the LOWEST version that fits: v2 (nothing extra),
+v3 (counters), v4 (timeline WITH samples). An empty recorder does NOT bump the version. A
+timeline-free capture is BYTE-IDENTICAL to a v2/v3 capture, so old readers are unaffected. A
+v4 capture is correctly REJECTED by a v3-capped reader (hard "unsupported version" error) —
+never silently truncated to a blank timeline. (The rejected v1.3.0 draft that "tolerated
+trailing bytes" would have round-tripped a v4 capture to an empty timeline; that is a silent
+data drop, not compatibility.)
+
+FIX. The counter section is now written for ALL version>=3 captures, even with zero counters
+(a v4 timeline-only capture): the 1-byte counter-count header keeps the decoder's version>=3
+read aligned. Under v3 the section's presence was equivalent to "counters exist"; v4 breaks
+that equivalence.

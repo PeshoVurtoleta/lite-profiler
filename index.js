@@ -1,6 +1,7 @@
 export { Profiler } from './src/profiler.js';
+export { TimelineRecorder } from './src/timeline.js';
 export { FrameHistogram, FrameClass } from './src/histogram.js';
-export { encodeCapture, decodeCapture, downloadCapture, LITECAP } from './src/litecap.js';
+export { encodeCapture, decodeCapture, encodeTimelineCapture, downloadCapture, LITECAP } from './src/litecap.js';
 export { FrameBudget, budgetMs, isOverBudget } from './src/presets.js';
 export { MeterHud } from './src/hud.js';
 export {

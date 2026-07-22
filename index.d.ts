@@ -14,3 +14,6 @@ export type {
     CaptureSummary, FrameSummary, PhaseSummary, CounterSummary, MetricDelta, CaptureDiff,
     Regression, RegressionReport
 } from './src/compare.js';
+export { TimelineRecorder } from './src/timeline.js';
+export type { F64Ring } from './src/timeline.js';
+export { encodeTimelineCapture } from './src/litecap.js';

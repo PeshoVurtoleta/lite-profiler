@@ -12,7 +12,7 @@ function withCounters(perFrame = 4096, frames = 12) {
 }
 
 test('LITECAP advertises v3 and MAX_COUNTERS', () => {
-    assert.equal(LITECAP.VERSION, 3);
+    assert.equal(LITECAP.VERSION, 4);  // max emit version; a counters-only capture is still emitted as v3
     assert.equal(LITECAP.MAX_COUNTERS, 64);
 });
 
