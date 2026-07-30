@@ -17,3 +17,5 @@ export type {
 export { TimelineRecorder } from './src/timeline.js';
 export type { F64Ring } from './src/timeline.js';
 export { encodeTimelineCapture } from './src/litecap.js';
+export { exportChromeTrace } from './src/trace.js';
+export type { ChromeTrace, ChromeTraceEvent, ExportChromeTraceOptions } from './src/trace.js';

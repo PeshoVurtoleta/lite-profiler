@@ -181,6 +181,9 @@ Opt-in, independent of `Profiler`. `recordFrameBoundary(t?)`, `beginSpan`/`endSp
 ### `summarize` / `diffCaptures` / `checkRegression` / `assertNoRegression` — comparison
 `summarize(profiler, meta?) -> CaptureSummary` reduces a window to a small JSON-serializable object (frame `avg/min/max/p01/p99/fps`, `jankRatio`, `spikeRatio`, `frameClass`, histogram `bins`, per-phase stats, and a per-counter block `{ [tag]: { sum, avg, min, max, p01, p99, last, count } }`) tagged with optional `{ label, engine, budgetMs }`. `summarizeCapture(decoded, meta?)` does the same from a decoded `.litecap`. `diffCaptures(baseline, candidate)` returns per-metric `{ base, cand, delta, pct }`. `checkRegression(baseline, candidate, tolerances?)` returns `{ ok, regressions, diff }`; `assertNoRegression(...)` throws a `RegressionError` (carrying `err.report`) when a gated metric worsens beyond tolerance. `DEFAULT_TOLERANCES` gates `frame.avg` and `frame.p99` at `+10%`.
 
+### `exportChromeTrace` / `litecap` CLI — trace export + terminal tooling
+`exportChromeTrace(decoded, opts?) -> ChromeTrace` converts a decoded LiteCap **v4** timeline into a Chrome Trace Event object for Perfetto; `opts` is `{ normalize?, processName? }`. Throws on a v2/v3 capture (no absolute clock). The `litecap` CLI (`npx litecap`) wraps `inspect` / `summarize` / `diff` / `gate` / `trace` with the family exit-code contract (`0/1/2/3`). See [Chrome trace export & the `litecap` CLI](#chrome-trace-export--the-litecap-cli).
+
 ## The `.litecap` format
 
 A flat little-endian buffer. Frames and each phase are stored oldest-first.
@@ -234,6 +237,33 @@ const cap = decodeCapture(buf);
 // cap.instantTags[i], cap.instantTimes[i]       : lane i's absolute marks
 const durations = cap.spanT1[0].map((t1, k) => t1 - cap.spanT0[0][k]);
 ```
+
+## Chrome trace export & the `litecap` CLI
+
+A v4 capture carries an absolute clock, so it can be turned into a **flame chart** with no bespoke viewer. `exportChromeTrace(decoded)` produces the [Chrome Trace Event](https://ui.perfetto.dev) object that Perfetto and `chrome://tracing` load directly:
+
+```js
+import { decodeCapture, exportChromeTrace } from '@zakkster/lite-profiler';
+
+const trace = exportChromeTrace(decodeCapture(buf));   // { traceEvents, displayTimeUnit, metadata }
+// drop JSON.stringify(trace) onto ui.perfetto.dev
+```
+
+Span pairs become `X` (complete) events, instant marks `i` events, and frame boundaries a marker lane; each lane is its own thread. Timestamps scale `performance.now()` ms to Chrome's microseconds — absolute by default, or `{ normalize: true }` to zero-base. It **refuses a v2/v3 capture** (a capture with no timeline): durations without a start clock can't make an honest flame chart, and inventing one would be a lie in a diagnostic tool.
+
+The same surface ships as a CLI for CI and quick terminal checks — `npx litecap`:
+
+```bash
+litecap inspect   session.litecap                 # structural header dump
+litecap summarize session.litecap --format json   # CaptureSummary
+litecap diff      base.litecap cand.litecap        # per-metric deltas
+litecap gate      base.litecap cand.litecap        # regression gate (exit 0/1/2)
+litecap trace     session.litecap -o trace.json    # Chrome trace for Perfetto
+```
+
+The grammar mirrors `lite-gc-gate` on purpose — verb-first, `--format console|json|markdown|github`, `--json <path>`, `--config <path>` — and shares its **exit-code contract: `0` pass, `1` fail, `2` inconclusive, `3` infrastructure error.** `gate` is a true three-state verdict: an empty capture, a schema mismatch, or a tolerance metric absent from both captures is **inconclusive (exit 2)**, never a silent pass — the same discipline that keeps "did not measure" distinct from "passed" everywhere in the family. Every verdict delegates to the in-process API (`summarizeCapture` / `diffCaptures` / `checkRegression`), pinned equal by a test, so the CLI can never become a second implementation.
+
+> Note: the committed `test/fixtures/trace-sample.json` and the trace-event schema assertions cover the exporter in CI; loading a trace into the live Perfetto UI is a manual verification step.
 
 ## Capture comparison & regression gating
 
@@ -307,12 +337,12 @@ This package is the focused core. Each layer below ships separately so the core 
 - **`lite-profiler-gl`** — a `lite-gl` HUD backend rendering thousands of frames across many phases in a single instanced draw.
 - **Diagnostic dashboard** — a live showcase profiling a real workload (a `lite-soa-particle-engine` / `lite-fx` storm), with `lite-hotkey` to toggle the overlay.
 
-Capture comparison and regression gating (`summarize` / `diffCaptures` / `assertNoRegression`) landed in the core in 1.1.0; deterministic per-frame counters (`count` / `countAt`, `counter.<tag>.<metric>` gating, LiteCap v3) landed in 1.2.0. The timeline-capture layer that a flame chart needs landed in 1.3.0: `TimelineRecorder` records absolute `performance.now()` span pairs, frame boundaries, and instant marks (LiteCap v4). A Perfetto / Chrome-trace exporter is now a formatting shim over that data model rather than a data-model addition, and is the natural fast-follow.
+Capture comparison and regression gating (`summarize` / `diffCaptures` / `assertNoRegression`) landed in the core in 1.1.0; deterministic per-frame counters (`count` / `countAt`, `counter.<tag>.<metric>` gating, LiteCap v3) landed in 1.2.0. The timeline-capture layer that a flame chart needs landed in 1.3.0: `TimelineRecorder` records absolute `performance.now()` span pairs, frame boundaries, and instant marks (LiteCap v4). The Perfetto / Chrome-trace exporter (`exportChromeTrace`) and the `litecap` CLI landed in 1.4.0 — a formatting shim and a terminal front-end over that data model, adding no new format.
 
 ## Testing
 
 ```bash
-npm test             # node --test (57 tests, zero dependencies)
+npm test             # node --test (123 tests)
 npm run bundle-check # esbuild ESM bundle sanity check
 ```
 

@@ -3,6 +3,56 @@
 All notable changes to `@zakkster/lite-profiler` are documented here.
 The format follows Keep a Changelog; this project adheres to Semantic Versioning.
 
+## [1.4.0] - 2026-07-31
+
+Exporters + CLI. A `.litecap` capture becomes two things it could not be before:
+a **Chrome trace** loadable in Perfetto, and a file you can inspect, summarize,
+diff and **gate from a terminal** with no browser. Fully additive; the binary
+format, the profiler hot path, and every existing export are byte-for-byte
+unchanged. Decisions in `decisions/0001-pr2-exporters-cli.md`.
+
+### Added
+
+- **`exportChromeTrace(decoded, opts?)`** — converts a decoded LiteCap **v4**
+  timeline into the Chrome Trace Event object (`{ traceEvents, displayTimeUnit,
+  metadata }`) that Perfetto and `chrome://tracing` load directly. Span pairs
+  become `ph:'X'` complete events, instant marks `ph:'i'`, and frame boundaries
+  a dedicated marker lane; each lane is its own thread. Timestamps scale
+  `performance.now()` ms to Chrome's microseconds, kept absolute by default or
+  zero-based with `{ normalize:true }`. It **refuses a v2/v3 capture** (throws):
+  durations with no absolute clock cannot honestly reconstruct a flame chart —
+  which is the whole reason the v1.3.0 timeline layer exists.
+- **`npx litecap` CLI** (`bin/Litecap.mjs`) — `inspect`, `summarize`, `diff`,
+  `gate`, `trace`. The grammar deliberately mirrors `lite-gc-gate`: verb-first,
+  `--format console|json|markdown|github`, `--json <path>`, `--config <path>`,
+  and the **same exit-code contract — 0 pass, 1 fail, 2 inconclusive, 3
+  infrastructure error** — so a user who knows one CLI in the family knows this
+  one. `gate` is a genuine three-state verdict: an empty capture, a schema
+  mismatch, or a tolerance metric absent from both captures is **inconclusive
+  (exit 2)**, never a silent pass. The CLI **delegates** every verdict to the
+  in-process API (`decodeCapture` + `summarizeCapture` / `diffCaptures` /
+  `checkRegression`) — a test pins the CLI's gate result equal to the API's on
+  the same capture pair, so it can never drift into a second implementation.
+
+### Tested
+
+- 23 new checks (100 → 123): the Chrome trace validated against the trace-event
+  schema (ph set, `dur >= 0`, per-thread ts monotonic) with a committed
+  `test/fixtures/trace-sample.json`; span/instant/frame mapping and microsecond
+  scaling; `normalize` zero-basing; v2/v3 refusal; the CLI driven as a
+  subprocess across all five verbs asserting each exit code including the
+  inconclusive case; and the CLI-gate == API-gate equality.
+- **Live import into the Perfetto UI is a manual step** (there is no browser in
+  the build environment) — the committed fixture and schema assertions stand in
+  for it in CI; the manual load is recorded here rather than claimed as an
+  automated gate.
+
+### Unchanged
+
+- `src/profiler.js`, `src/timeline.js`, `src/litecap.js` and `src/compare.js`
+  are untouched — the measuring stick does not move in a release that only adds
+  readers of what it already produces.
+
 ## [1.3.0] - 2026-07-14
 
 Timeline capture layer. The core rings store DURATIONS; a flame chart also needs to

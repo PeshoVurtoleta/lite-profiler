@@ -1,0 +1,153 @@
+{
+  "traceEvents": [
+    {
+      "ph": "M",
+      "name": "process_name",
+      "pid": 1,
+      "args": {
+        "name": "run-a"
+      }
+    },
+    {
+      "ph": "M",
+      "name": "thread_name",
+      "pid": 1,
+      "tid": 0,
+      "args": {
+        "name": "frames"
+      }
+    },
+    {
+      "ph": "i",
+      "name": "frame",
+      "pid": 1,
+      "tid": 0,
+      "ts": 3600000000,
+      "s": "t"
+    },
+    {
+      "ph": "i",
+      "name": "frame",
+      "pid": 1,
+      "tid": 0,
+      "ts": 3600016000,
+      "s": "t"
+    },
+    {
+      "ph": "i",
+      "name": "frame",
+      "pid": 1,
+      "tid": 0,
+      "ts": 3600032000,
+      "s": "t"
+    },
+    {
+      "ph": "i",
+      "name": "frame",
+      "pid": 1,
+      "tid": 0,
+      "ts": 3600048000,
+      "s": "t"
+    },
+    {
+      "ph": "M",
+      "name": "thread_name",
+      "pid": 1,
+      "tid": 1,
+      "args": {
+        "name": "physics"
+      }
+    },
+    {
+      "ph": "X",
+      "name": "physics",
+      "pid": 1,
+      "tid": 1,
+      "ts": 3600001000,
+      "dur": 4500
+    },
+    {
+      "ph": "X",
+      "name": "physics",
+      "pid": 1,
+      "tid": 1,
+      "ts": 3600017000,
+      "dur": 4500
+    },
+    {
+      "ph": "X",
+      "name": "physics",
+      "pid": 1,
+      "tid": 1,
+      "ts": 3600033000,
+      "dur": 4500
+    },
+    {
+      "ph": "X",
+      "name": "physics",
+      "pid": 1,
+      "tid": 1,
+      "ts": 3600049000,
+      "dur": 4500
+    },
+    {
+      "ph": "M",
+      "name": "thread_name",
+      "pid": 1,
+      "tid": 2,
+      "args": {
+        "name": "render"
+      }
+    },
+    {
+      "ph": "M",
+      "name": "thread_name",
+      "pid": 1,
+      "tid": 3,
+      "args": {
+        "name": "gc"
+      }
+    },
+    {
+      "ph": "i",
+      "name": "gc",
+      "pid": 1,
+      "tid": 3,
+      "ts": 3600008000,
+      "s": "t"
+    },
+    {
+      "ph": "i",
+      "name": "gc",
+      "pid": 1,
+      "tid": 3,
+      "ts": 3600024000,
+      "s": "t"
+    },
+    {
+      "ph": "i",
+      "name": "gc",
+      "pid": 1,
+      "tid": 3,
+      "ts": 3600040000,
+      "s": "t"
+    },
+    {
+      "ph": "i",
+      "name": "gc",
+      "pid": 1,
+      "tid": 3,
+      "ts": 3600056000,
+      "s": "t"
+    }
+  ],
+  "displayTimeUnit": "ms",
+  "metadata": {
+    "source": "@zakkster/lite-profiler",
+    "litecapVersion": 4,
+    "normalized": false,
+    "captureMeta": {
+      "label": "run-a"
+    }
+  }
+}
