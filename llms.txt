@@ -26,6 +26,10 @@ core; reactive and GPU layers ship separately.
   Also shipped as the `litecap` CLI (npx litecap inspect|summarize|diff|gate|trace). See v1.4.0.
 - createFrameProbe({ profiler, sink, ... }) -> SPP frame-telemetry probe (block 0x041x) so a
   standalone Profiler streams into @zakkster/lite-scope. See v1.5.0.
+- createPhaseProbe({ profiler, sink, streamId?, clock?, intern? }) -> SPP phase-telemetry probe
+  (block 0x090x, one 'phase-telemetry' stream) streaming per-phase avg/p99/max, phase tag id in
+  the record's b slot. PHASE_TELEMETRY_DESCRIPTOR + OP_PHASE_AVG(0x0900)/OP_PHASE_P99(0x0901)/
+  OP_PHASE_MAX(0x0902). See v1.6.0.
 - summarize(profiler, meta?) -> CaptureSummary {schema,label,engine,timestamp,
   budgetMs,frameCount,capacity,frame:{avg,min,max,p01,p99,fps,jankRatio,spikeRatio,
   frameClass,bins},phases:{[tag]:{avg,min,max,p01,p99,last,count}},
@@ -58,6 +62,25 @@ core; reactive and GPU layers ship separately.
 ## Dependencies
 @zakkster/lite-ring-buffer, @zakkster/lite-stats-math (analysis),
 @zakkster/lite-canvas-graph (MeterHud). All zero-runtime-dep siblings.
+
+## v1.6.0 — SPP phase-telemetry probe (per-phase lanes on the Scope)
+
+createPhaseProbe({ profiler, sink, streamId?, clock?, intern? }) -> { sample(), dispose(),
+disposed }. The per-phase sibling of createFrameProbe. sample() reduces every registered phase
+ring to avg/p99/max and writes 3*phaseCount records into a DI'd sink on the NEW frozen SPP block
+0x09 (owned by @zakkster/lite-scope 1.1.0, produced only here). One 'phase-telemetry' stream
+carries all phases; the phase's tag id rides the record's b slot, so one stream demuxes into N
+lanes. b defaults to the profiler's dense phase index (profiler.handle(tag) order); pass intern
+(a scope.intern bridge) for scope-interned ids resolvable via the scope string table. Interning
+is done ONCE at construction -- the hot path never interns.
+PHASE_TELEMETRY_DESCRIPTOR + OP_PHASE_AVG(0x0900)/OP_PHASE_P99(0x0901)/OP_PHASE_MAX(0x0902),
+inlined as protocol facts (couple by protocol, never dependency). Zero-GC: StatsMath scratch +
+out object + per-phase tag-id table allocated once, reused -- a sample allocates nothing (proven
+under --expose-gc, 50k samples < 64 KB). A profiler with no phases emits nothing. Every value
+EXACTLY equals summarize().phases[tag].{avg,p99,max}. Live conformance (test/16) round-trips
+through a real createScope + readSlab, resolving each b back to its tag via scope.stringTable().
+lite-scope is a devDependency (^1.1.0) imported ONLY by tests; src/ imports nothing from it.
+155 tests (+17); no API/behaviour change to createFrameProbe or the profiler hot path.
 
 ## v1.5.1 — live lite-scope conformance (test-only)
 

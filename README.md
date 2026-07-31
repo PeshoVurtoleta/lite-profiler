@@ -187,6 +187,9 @@ Opt-in, independent of `Profiler`. `recordFrameBoundary(t?)`, `beginSpan`/`endSp
 ### `createFrameProbe` — SPP frame-telemetry probe
 `createFrameProbe({ profiler, sink, streamId?, clock?, regressed? }) -> { sample(), dispose(), disposed }` emits the frozen SPP `0x0410–0x0415` frame-telemetry block (`FRAME_TELEMETRY_DESCRIPTOR`) into a DI'd sink, giving the standalone `Profiler` a `@zakkster/lite-scope` channel with no reactive dependency. Zero-GC. See [Scope probe (`createFrameProbe`)](#scope-probe-createframeprobe).
 
+### `createPhaseProbe` — SPP phase-telemetry probe
+`createPhaseProbe({ profiler, sink, streamId?, clock?, intern? }) -> { sample(), dispose(), disposed }` is the per-phase sibling: each `sample()` reduces every registered phase ring to avg / p99 / max and emits them on the frozen SPP block `0x0900–0x0902` (`PHASE_TELEMETRY_DESCRIPTOR`), one `phase-telemetry` stream, with the phase's tag id in the record's `b` slot. Zero-GC. See [Phase probe (`createPhaseProbe`)](#phase-probe-createphaseprobe).
+
 ## The `.litecap` format
 
 A flat little-endian buffer. Frames and each phase are stored oldest-first.
@@ -285,6 +288,27 @@ Each `sample()` reduces the frame window and writes six records into the DI'd `s
 This is the **direct** path to the Scope. The same telemetry was previously reachable only through the reactive bridge (`lite-profiler-signal` + a `lite-signal` peer + `lite-throttle` + `lite-watch-ex`); `createFrameProbe` needs nothing but this package and a sink — for headless, CI, and non-reactive apps. It's a second *producer* of a shared channel, not a new block: run one probe or the other, never both for the same profiler.
 
 > **Conformance (v1.5.1).** The probe's records are verified end to end against a real `@zakkster/lite-scope`: `test/14-scope-conformance.test.js` registers the descriptor through the actual registry, writes into a real memory sink, and decodes the bytes back through lite-scope's own `readSlab` reference decoder — proving the registry-assigned stream id is the one on the wire and every decoded value exactly equals `summarize()`. `src/probe.js` still imports nothing from lite-scope (it is a test-only devDependency); probes couple by protocol, never by dependency.
+
+## Phase probe (`createPhaseProbe`)
+
+`createFrameProbe` streams the whole-frame numbers; **`createPhaseProbe` streams the per-phase breakdown** on the same Scope. It reduces every registered phase ring (`physics`, `render`, …) to avg / p99 / max and emits them on the **frozen SPP block `0x0900–0x0902`** (`PHASE_TELEMETRY_DESCRIPTOR`) — a dedicated block owned by `@zakkster/lite-scope` 1.1.0, produced only here:
+
+```js
+import { Profiler, createPhaseProbe } from '@zakkster/lite-profiler';
+
+const profiler = new Profiler(1024, ['physics', 'render']);
+// … begin(tag)/end(tag) each frame …
+
+const probe = createPhaseProbe({ profiler, sink, streamId: 6 });
+// on your cadence (the descriptor advertises 10 Hz):
+probe.sample();   // emits 3 records per phase: phase.avg, phase.p99, phase.max
+```
+
+A single `phase-telemetry` stream carries every phase: the phase's **tag id rides the record's `b` slot**, so one stream demuxes into as many lanes as you have phases. By default `b` is the profiler's own dense phase index (`profiler.handle(tag)` order); pass `intern` (a `scope.intern` bridge) to carry scope-interned ids resolvable via the scope's string table. Interning happens once, at construction — the hot path never interns.
+
+It's **zero-GC**: the `StatsMath` scratch, the reused `out` object, and the per-phase tag-id table are allocated once and reused, so a sample allocates nothing (proven under `--expose-gc`). A profiler with no registered phases emits nothing. Every emitted value exactly equals `summarize().phases[tag].{avg,p99,max}` — one source of truth.
+
+> **Conformance (v1.6.0).** `test/16-phase-scope-conformance.test.js` registers `PHASE_TELEMETRY_DESCRIPTOR` through a real `createScope`, writes into a real memory sink, and decodes back through lite-scope's `readSlab` — proving block-0x09 stream routing and width-1 records, that each `b` resolves to its tag via the scope string table, and that the decoded avg/p99/max still exactly equal `summarize()`. `src/phase-probe.js` imports nothing from lite-scope (test-only devDependency); couple by protocol, never by dependency.
 
 ## Capture comparison & regression gating
 

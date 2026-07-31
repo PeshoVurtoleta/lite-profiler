@@ -27,3 +27,11 @@ export type {
     SppSink, FrameTelemetryDescriptor, FrameTelemetryOp,
     CreateFrameProbeOptions, FrameProbe
 } from './src/probe.js';
+export {
+    createPhaseProbe, PHASE_TELEMETRY_DESCRIPTOR,
+    OP_PHASE_AVG, OP_PHASE_P99, OP_PHASE_MAX
+} from './src/phase-probe.js';
+export type {
+    PhaseTelemetryDescriptor, PhaseTelemetryOp,
+    CreatePhaseProbeOptions, PhaseProbe
+} from './src/phase-probe.js';

@@ -3,6 +3,49 @@
 All notable changes to `@zakkster/lite-profiler` are documented here.
 The format follows Keep a Changelog; this project adheres to Semantic Versioning.
 
+## [1.6.0] - 2026-08-01
+
+Per-phase telemetry on the Scope. `createFrameProbe` streams the whole-frame
+channel; `createPhaseProbe` is its per-phase sibling — it reduces every registered
+phase ring to avg / p99 / max and emits them on the **new frozen SPP block 0x09**,
+one `phase-telemetry` stream, with the phase's tag id riding the record's `b` slot.
+This lands the producer half of the two-package phase channel; the protocol home
+is `@zakkster/lite-scope` 1.1.0 (block 0x09). `src/` still imports nothing from
+lite-scope. Decisions in `decisions/0004-phase-channel.md`.
+
+### Added
+
+- **`createPhaseProbe({ profiler, sink, streamId?, clock?, intern? })` →
+  `{ sample(), dispose(), disposed }`** (`src/phase-probe.js`). Each `sample()`
+  emits `3 × phaseCount` records, grouped phase-major, into a DI'd sink. Zero-GC:
+  the `StatsMath` scratch, the reused `out` object, and the per-phase tag-id table
+  are allocated once at construction; a sample allocates nothing (proven under
+  `--expose-gc`, 50k samples < 64 KB). A profiler with no phases emits nothing.
+- **`PHASE_TELEMETRY_DESCRIPTOR`** + **`OP_PHASE_AVG` (0x0900) / `OP_PHASE_P99`
+  (0x0901) / `OP_PHASE_MAX` (0x0902)** — the frozen block-0x09 opcodes, inlined as
+  PROTOCOL FACTS (probes couple by protocol, never dependency), matching
+  lite-scope's `PROTOCOL.md` and `phaseTelemetry` golden vector.
+- **`b` = phase tag id.** By default the profiler's own dense phase index; pass
+  `options.intern` (a `scope.intern` bridge) to carry scope-interned ids instead.
+  Interning happens once, at construction, off the hot path — per the block 0x01
+  tagId convention.
+- **`test/15-phase-probe.test.js`** (mock collector) — canonical record order,
+  stream routing, `b`-slot ids (index default + intern bridge), intern-once,
+  exact `summarize().phases[tag].{avg,p99,max}` parity, empty-phase zeros,
+  no-phase no-op, dispose, fail-closed, and the `--expose-gc` alloc gate.
+- **`test/16-phase-scope-conformance.test.js`** (live) — registers the descriptor
+  through a real `createScope`, writes into a real `createMemorySink`, and decodes
+  back through lite-scope's `readSlab`, proving block-0x09 routing/width and that
+  each `b` resolves to its tag via the scope string table, with values still
+  exactly matching `summarize()`.
+- `@zakkster/lite-scope` devDependency bumped to `^1.1.0` (block 0x09). Imported
+  ONLY by the conformance test; absent from `dependencies` and the tarball.
+
+### Unchanged
+
+- No change to `createFrameProbe`, the profiler hot path, or any existing record.
+  Additive: a new stream on a new block. 155 tests (+17); zero-GC gate green.
+
 ## [1.5.1] - 2026-07-31
 
 Live conformance. v1.5.0 proved `createFrameProbe` against a mock sink plus exact
