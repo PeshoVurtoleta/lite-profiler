@@ -3,6 +3,34 @@
 All notable changes to `@zakkster/lite-profiler` are documented here.
 The format follows Keep a Changelog; this project adheres to Semantic Versioning.
 
+## [1.5.1] - 2026-07-31
+
+Live conformance. v1.5.0 proved `createFrameProbe` against a mock sink plus exact
+`summarize()` parity, and deferred a real `@zakkster/lite-scope` round-trip. This
+patch adds it: a test-only run through the actual registry and reference decoder.
+Behaviour is unchanged — `src/probe.js` and the profiler hot path are untouched.
+Decisions in `decisions/0003-live-scope-conformance.md`.
+
+### Added
+
+- **`test/14-scope-conformance.test.js`** — registers `FRAME_TELEMETRY_DESCRIPTOR`
+  through a real `createScope`, lets the probe write into a real `createMemorySink`,
+  and decodes the bytes back through lite-scope's own `readSlab` reference decoder.
+  Proves the registry-assigned stream id is the one on the wire, the probe's packing
+  equals lite-scope's `pack()`, `widthOf` sees all six ops as width 1, and every
+  decoded value still exactly equals `summarize()` — end to end, not against a mock.
+- `@zakkster/lite-scope` as a **devDependency** (`file:../LiteScope`), imported ONLY
+  by the conformance test. `src/probe.js` still imports nothing from it — probes
+  couple by protocol, never by dependency — and it is absent from `dependencies` and
+  the published tarball. The convention trade (dev-dep vs. vendored `vectors.json`)
+  is recorded in the decision file.
+
+### Unchanged
+
+- No public API change; SPP records, opcodes, and the zero-GC hot path are identical
+  to 1.5.0. 138 tests pass (+4 from the live conformance suite); the zero-GC gate
+  stays green under `--expose-gc`.
+
 ## [1.5.0] - 2026-07-31
 
 Scope probe. `createFrameProbe` gives the standalone `Profiler` a Scope Probe

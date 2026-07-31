@@ -59,6 +59,18 @@ core; reactive and GPU layers ship separately.
 @zakkster/lite-ring-buffer, @zakkster/lite-stats-math (analysis),
 @zakkster/lite-canvas-graph (MeterHud). All zero-runtime-dep siblings.
 
+## v1.5.1 — live lite-scope conformance (test-only)
+
+createFrameProbe's records are now verified end-to-end through the REAL @zakkster/lite-scope,
+not just a mock sink. test/14-scope-conformance.test.js registers FRAME_TELEMETRY_DESCRIPTOR
+through a real createScope (the registry assigns the stream id), writes into a real
+createMemorySink, and decodes back through lite-scope's readSlab reference decoder: proves the
+registry-assigned id is the one on the wire, the probe's packing == lite-scope pack(), widthOf
+sees all 6 ops as width 1, and every decoded value still EXACTLY equals summarize(). lite-scope
+is a devDependency (file:../LiteScope) imported ONLY by the test -- src/probe.js imports nothing
+from it (couple by protocol, not dependency), and it is absent from dependencies + the tarball.
+No API/behaviour change from 1.5.0; 138 tests (+4 conformance); zero-GC gate still green.
+
 ## v1.5.0 — SPP frame-telemetry probe (the profiler joins the Scope)
 
 createFrameProbe({ profiler, sink, streamId?, clock?, regressed? }) -> { sample(), dispose(),

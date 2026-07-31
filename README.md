@@ -7,7 +7,7 @@
 [![npm total downloads](https://img.shields.io/npm/dt/@zakkster/lite-profiler?style=for-the-badge&color=blue)](https://www.npmjs.com/package/@zakkster/lite-profiler)
 ![Zero-GC](https://img.shields.io/badge/Hot_Path-Zero_GC-brightgreen?style=for-the-badge)
 ![TypeScript](https://img.shields.io/badge/TypeScript-Full_Types-informational?style=for-the-badge)
-![Tests](https://img.shields.io/badge/Tests-57_passing-brightgreen?style=for-the-badge)
+![Tests](https://img.shields.io/badge/Tests-138_passing-brightgreen?style=for-the-badge)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
 
 Always-on frame and per-phase profiling for HTML5 game loops. `performance.now()` into power-of-two ring buffers, single-pass percentiles, a frame-time classifier that tells a GC spike apart from a sustained throttle, deterministic per-frame command counters that gate exactly, and a binary capture format you can serialize, ship, and read back.
@@ -284,6 +284,8 @@ Each `sample()` reduces the frame window and writes six records into the DI'd `s
 
 This is the **direct** path to the Scope. The same telemetry was previously reachable only through the reactive bridge (`lite-profiler-signal` + a `lite-signal` peer + `lite-throttle` + `lite-watch-ex`); `createFrameProbe` needs nothing but this package and a sink — for headless, CI, and non-reactive apps. It's a second *producer* of a shared channel, not a new block: run one probe or the other, never both for the same profiler.
 
+> **Conformance (v1.5.1).** The probe's records are verified end to end against a real `@zakkster/lite-scope`: `test/14-scope-conformance.test.js` registers the descriptor through the actual registry, writes into a real memory sink, and decodes the bytes back through lite-scope's own `readSlab` reference decoder — proving the registry-assigned stream id is the one on the wire and every decoded value exactly equals `summarize()`. `src/probe.js` still imports nothing from lite-scope (it is a test-only devDependency); probes couple by protocol, never by dependency.
+
 ## Capture comparison & regression gating
 
 `summarize()` turns a rolling window into a small, self-describing snapshot; comparing two snapshots is how you prove a change did not cost performance. Because the profiler is engine-agnostic, the same workload can be captured under different builds and diffed — which is exactly how this pairs with the reactive stack: profile one graph under lite-signal 1.3.0, again under 1.4.0 (and later 1.7.0), and gate on the delta. A conformance suite says the engine is *still correct*; this says it is *still fast*.
@@ -361,7 +363,7 @@ Capture comparison and regression gating (`summarize` / `diffCaptures` / `assert
 ## Testing
 
 ```bash
-npm test             # node --test (135 tests)
+npm test             # node --test (138 tests)
 npm run bundle-check # esbuild ESM bundle sanity check
 ```
 
