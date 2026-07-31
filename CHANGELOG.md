@@ -3,6 +3,56 @@
 All notable changes to `@zakkster/lite-profiler` are documented here.
 The format follows Keep a Changelog; this project adheres to Semantic Versioning.
 
+## [1.5.0] - 2026-07-31
+
+Scope probe. `createFrameProbe` gives the standalone `Profiler` a Scope Probe
+Protocol (SPP) channel, so a plain non-reactive profiler streams frame telemetry
+into `@zakkster/lite-scope` like every other probe in the suite. Additive; the
+binary format and the profiler hot path are untouched. Decisions in
+`decisions/0002-frame-probe.md`.
+
+### Added
+
+- **`createFrameProbe({ profiler, sink, streamId?, clock?, regressed? })`** — an
+  SPP v1 probe over a live `Profiler`. `sample()` reduces the frame window to
+  fps / avg / p99 / max / jank / class and emits six records into a DI'd sink
+  (`write(packed, t, a, b)`, `packed = streamId<<16 | opcode`). Zero-GC: the
+  `StatsMath` + `FrameHistogram` scratch is allocated once and reused, so a
+  sample allocates nothing (proven under `--expose-gc`: 50k samples < 64 KB).
+  `dispose()`/`disposed` mirror the suite's probes; a bad profiler or sink throws
+  (fail closed).
+- **`FRAME_TELEMETRY_DESCRIPTOR`** + the opcode constants **`OP_FPS` (0x0410)
+  … `OP_FRAME_CLASS` (0x0415)** — the FROZEN SPP frame-telemetry block, inlined
+  as protocol facts so a core-profiler stream drops onto the existing Scope
+  CHANNELS scene and gate with no protocol change.
+
+### Why it's not redundant with `lite-profiler-signal`
+
+That block was previously reachable only through the reactive bridge
+(`lite-profiler-signal` + a `lite-signal` peer + `lite-throttle` +
+`lite-watch-ex`). `createFrameProbe` is the direct path — a bare `Profiler` plus
+a sink, nothing else — for headless / CI / non-reactive apps. It is a second
+*producer* of a shared channel, not a new block; run one probe or the other,
+never both for the same profiler. (`OP_FRAME_CLASS.a` is emitted as a numeric
+enum — steady=0, spiking=1, throttled=2 — the correct f64-slot value; the
+reactive probe writes the raw string label there.)
+
+### Tested
+
+- 11 new checks (124 → 135): descriptor/opcode conformance to the frozen block;
+  six-record emission in canonical order; `streamId` packing and a single shared
+  timestamp; every emitted value asserted **exactly equal to `summarize()`** on
+  the same profiler (one source of truth); the classifier→enum map; the empty
+  profiler; `dispose()` idempotency; fail-closed argument validation; and the
+  zero-allocation gate under `--expose-gc`.
+
+### Note
+
+- `lite-scope` is not a dependency and the sibling probe tests mock the sink, so
+  the conformance test does too (asserting against `summarize()` parity + the
+  frozen opcodes). A live `lite-scope` memory-sink round-trip is deferred to a
+  workspace-wiring step, recorded rather than claimed.
+
 ## [1.4.0] - 2026-07-31
 
 Exporters + CLI. A `.litecap` capture becomes two things it could not be before:

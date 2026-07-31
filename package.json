@@ -1,6 +1,6 @@
 {
   "name": "@zakkster/lite-profiler",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Zero-GC frame profiler: per-phase timing, deterministic counters, percentiles, frame classifier, .litecap binary capture, regression gating, and opt-in absolute-timeline capture for flame charts.",
   "type": "module",
   "main": "./index.js",

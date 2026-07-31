@@ -184,6 +184,9 @@ Opt-in, independent of `Profiler`. `recordFrameBoundary(t?)`, `beginSpan`/`endSp
 ### `exportChromeTrace` / `litecap` CLI — trace export + terminal tooling
 `exportChromeTrace(decoded, opts?) -> ChromeTrace` converts a decoded LiteCap **v4** timeline into a Chrome Trace Event object for Perfetto; `opts` is `{ normalize?, processName? }`. Throws on a v2/v3 capture (no absolute clock). The `litecap` CLI (`npx litecap`) wraps `inspect` / `summarize` / `diff` / `gate` / `trace` with the family exit-code contract (`0/1/2/3`). See [Chrome trace export & the `litecap` CLI](#chrome-trace-export--the-litecap-cli).
 
+### `createFrameProbe` — SPP frame-telemetry probe
+`createFrameProbe({ profiler, sink, streamId?, clock?, regressed? }) -> { sample(), dispose(), disposed }` emits the frozen SPP `0x0410–0x0415` frame-telemetry block (`FRAME_TELEMETRY_DESCRIPTOR`) into a DI'd sink, giving the standalone `Profiler` a `@zakkster/lite-scope` channel with no reactive dependency. Zero-GC. See [Scope probe (`createFrameProbe`)](#scope-probe-createframeprobe).
+
 ## The `.litecap` format
 
 A flat little-endian buffer. Frames and each phase are stored oldest-first.
@@ -265,6 +268,22 @@ The grammar mirrors `lite-gc-gate` on purpose — verb-first, `--format console|
 
 > Note: the committed `test/fixtures/trace-sample.json` and the trace-event schema assertions cover the exporter in CI; loading a trace into the live Perfetto UI is a manual verification step.
 
+## Scope probe (`createFrameProbe`)
+
+The `@zakkster` profiler suite shares one wire format — the **Scope Probe Protocol (SPP)**, frozen in [`@zakkster/lite-scope`](https://www.npmjs.com/package/@zakkster/lite-scope): every probe emits fixed-width records into an injected sink, and no probe imports another package. `createFrameProbe` gives the standalone `Profiler` its SPP channel, so a plain, **non-reactive** profiler shows up on the Scope alongside GC, layout, worker and leak probes:
+
+```js
+import { Profiler, createFrameProbe } from '@zakkster/lite-profiler';
+
+const probe = createFrameProbe({ profiler, sink, streamId: 4 });
+// on your cadence (the descriptor advertises 10 Hz):
+probe.sample();   // emits 6 records: fps, frame.avg, frame.p99, frame.max, jank, frame.class
+```
+
+Each `sample()` reduces the frame window and writes six records into the DI'd `sink` (`write(packed, t, a, b)`, `packed = streamId<<16 | opcode`) — reusing the **frozen `0x0410–0x0415` frame-telemetry block** so a core-profiler stream drops onto the existing Scope CHANNELS scene and gate with no protocol change. It's **zero-GC**: the `StatsMath` + `FrameHistogram` scratch is allocated once and reused, so a sample allocates nothing (proven under `--expose-gc`).
+
+This is the **direct** path to the Scope. The same telemetry was previously reachable only through the reactive bridge (`lite-profiler-signal` + a `lite-signal` peer + `lite-throttle` + `lite-watch-ex`); `createFrameProbe` needs nothing but this package and a sink — for headless, CI, and non-reactive apps. It's a second *producer* of a shared channel, not a new block: run one probe or the other, never both for the same profiler.
+
 ## Capture comparison & regression gating
 
 `summarize()` turns a rolling window into a small, self-describing snapshot; comparing two snapshots is how you prove a change did not cost performance. Because the profiler is engine-agnostic, the same workload can be captured under different builds and diffed — which is exactly how this pairs with the reactive stack: profile one graph under lite-signal 1.3.0, again under 1.4.0 (and later 1.7.0), and gate on the delta. A conformance suite says the engine is *still correct*; this says it is *still fast*.
@@ -342,7 +361,7 @@ Capture comparison and regression gating (`summarize` / `diffCaptures` / `assert
 ## Testing
 
 ```bash
-npm test             # node --test (123 tests)
+npm test             # node --test (135 tests)
 npm run bundle-check # esbuild ESM bundle sanity check
 ```
 

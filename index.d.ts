@@ -19,3 +19,11 @@ export type { F64Ring } from './src/timeline.js';
 export { encodeTimelineCapture } from './src/litecap.js';
 export { exportChromeTrace } from './src/trace.js';
 export type { ChromeTrace, ChromeTraceEvent, ExportChromeTraceOptions } from './src/trace.js';
+export {
+    createFrameProbe, FRAME_TELEMETRY_DESCRIPTOR,
+    OP_FPS, OP_FRAME_AVG, OP_FRAME_P99, OP_FRAME_MAX, OP_JANK, OP_FRAME_CLASS
+} from './src/probe.js';
+export type {
+    SppSink, FrameTelemetryDescriptor, FrameTelemetryOp,
+    CreateFrameProbeOptions, FrameProbe
+} from './src/probe.js';
