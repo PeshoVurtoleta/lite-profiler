@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>lite-profiler // SPP scope channels</title>
+
+    <script type="importmap">
+{
+  "imports": {
+    "@zakkster/lite-profiler": "../index.js",
+    "@zakkster/lite-ring-buffer": "https://esm.sh/@zakkster/lite-ring-buffer@1",
+    "@zakkster/lite-stats-math": "https://esm.sh/@zakkster/lite-stats-math@1",
+    "@zakkster/lite-canvas-graph": "https://esm.sh/@zakkster/lite-canvas-graph@1",
+    "@zakkster/lite-scope": "https://esm.sh/@zakkster/lite-scope@1"
+  }
+}
+    </script>
+
+    <style>
+        :root {
+            --bg: #060d0a;
+            --bg: oklch(0.16 0.02 165);
+            --panel: #0a1712;
+            --panel: oklch(0.21 0.025 165);
+            --edge: #11271d;
+            --edge: oklch(0.30 0.04 165);
+            --phosphor: #00ffc6;
+            --phosphor: oklch(0.86 0.16 168);
+            --phosphor-dim: #1f7d63;
+            --phosphor-dim: oklch(0.56 0.09 168);
+            --ink: #bfe9dc;
+            --ink: oklch(0.88 0.05 168);
+            --muted: #5d8579;
+            --muted: oklch(0.62 0.04 168);
+            --amber: #ffb300;
+            --amber: oklch(0.82 0.16 80);
+            --sky: #57c7ff;
+            --sky: oklch(0.78 0.12 240);
+            --red: #ff4d4d;
+            --red: oklch(0.68 0.20 25);
+            --grid: rgba(0, 255, 198, 0.06);
+            --radius: 0.5rem;
+            --gap: 0.75rem;
+            font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+        }
+
+        * { box-sizing: border-box; }
+
+        html, body { height: 100%; margin: 0; }
+
+        body {
+            background-color: var(--bg);
+            background-image: repeating-linear-gradient(0deg, var(--grid) 0, var(--grid) 1px, transparent 1px, transparent 2.5rem),
+            repeating-linear-gradient(90deg, var(--grid) 0, var(--grid) 1px, transparent 1px, transparent 2.5rem);
+            color: var(--ink);
+            font-size: 14px;
+            line-height: 1.4;
+        }
+
+        .app {
+            display: grid;
+            grid-template-rows: auto 1fr auto;
+            gap: var(--gap);
+            height: 100%;
+            padding: var(--gap);
+            max-width: 1500px;
+            margin: 0 auto;
+        }
+
+        header {
+            display: flex;
+            align-items: baseline;
+            gap: 1rem;
+            border-bottom: 1px solid var(--edge);
+            padding-bottom: 0.5rem;
+        }
+
+        header h1 {
+            font-size: 1rem;
+            font-weight: 600;
+            letter-spacing: 0.08em;
+            margin: 0;
+            color: var(--phosphor);
+            text-shadow: 0 0 8px var(--phosphor-dim);
+        }
+
+        header h1 span { color: var(--muted); text-shadow: none; }
+
+        .xlink {
+            font-size: 0.7rem;
+            letter-spacing: 0.08em;
+            color: var(--phosphor-dim);
+            text-decoration: none;
+            margin-left: auto;
+        }
+
+        @media (hover: hover) {
+            .xlink:hover { color: var(--phosphor); }
+        }
+
+        .run {
+            font-size: 0.75rem;
+            letter-spacing: 0.12em;
+            padding: 0.15rem 0.6rem;
+            border: 1px solid var(--edge);
+            border-radius: 999px;
+            color: var(--phosphor);
+            border-color: var(--phosphor-dim);
+        }
+
+        .run[data-run="spike"] { color: var(--amber); border-color: var(--amber); }
+        .run[data-run="paused"] { color: var(--muted); }
+
+        main {
+            display: grid;
+            grid-template-columns: 1fr 27rem;
+            gap: var(--gap);
+            min-height: 0;
+        }
+
+        .streams {
+            display: flex;
+            flex-direction: column;
+            gap: var(--gap);
+            min-height: 0;
+            overflow: auto;
+        }
+
+        .panel {
+            background: var(--panel);
+            border: 1px solid var(--edge);
+            border-radius: var(--radius);
+            padding: 0.7rem 0.8rem;
+        }
+
+        .panel > h2 {
+            font-size: 0.68rem;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            color: var(--muted);
+            margin: 0 0 0.55rem;
+            font-weight: 600;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .panel > h2 .blk {
+            color: var(--phosphor-dim);
+            letter-spacing: 0.06em;
+        }
+
+        .stream[data-block="4"] > h2 .blk { color: var(--phosphor); }
+        .stream[data-block="9"] > h2 .blk { color: var(--amber); }
+        .stream[data-block="10"] > h2 .blk { color: var(--sky); }
+
+        table.ops { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+
+        table.ops th {
+            text-align: left;
+            font-size: 0.6rem;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--muted);
+            font-weight: 600;
+            padding: 0.1rem 0.3rem;
+            border-bottom: 1px solid var(--edge);
+        }
+
+        table.ops td {
+            padding: 0.18rem 0.3rem;
+            font-size: 0.76rem;
+            border-bottom: 1px solid color-mix(in oklch, var(--edge) 45%, transparent);
+        }
+
+        table.ops td.op { color: var(--ink); }
+        table.ops td.code { color: var(--muted); font-size: 0.68rem; }
+        table.ops td.a { color: var(--phosphor); text-align: right; }
+        table.ops td.b { color: var(--muted); text-align: right; }
+        table.ops td.tag { color: var(--amber); }
+        .stream[data-block="10"] td.tag { color: var(--sky); }
+
+        .sinkbar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.4rem 1.1rem;
+            font-size: 0.7rem;
+            color: var(--muted);
+            font-variant-numeric: tabular-nums;
+        }
+
+        .sinkbar b { color: var(--phosphor); font-weight: 600; }
+
+        .side { display: flex; flex-direction: column; gap: var(--gap); min-height: 0; }
+
+        .ticker {
+            flex: 1;
+            min-height: 0;
+            overflow: hidden;
+            font-size: 0.68rem;
+            line-height: 1.5;
+            font-variant-numeric: tabular-nums;
+            color: var(--muted);
+            white-space: pre;
+        }
+
+        .ticker .row { display: block; }
+        .ticker .row .s { color: var(--phosphor-dim); }
+        .ticker .row .o { color: var(--ink); }
+
+        .hint { font-size: 0.66rem; color: var(--muted); }
+        .hint b { color: var(--phosphor-dim); }
+        code { color: var(--phosphor-dim); }
+
+        footer {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 1rem;
+            border-top: 1px solid var(--edge);
+            padding-top: 0.6rem;
+        }
+
+        .ctl { display: flex; align-items: center; gap: 0.5rem; font-size: 0.74rem; color: var(--muted); }
+
+        input[type="range"] { width: 11rem; accent-color: var(--phosphor); }
+
+        .count { color: var(--phosphor); font-variant-numeric: tabular-nums; min-width: 3.5rem; text-align: right; }
+
+        button {
+            font-family: inherit;
+            font-size: 0.72rem;
+            letter-spacing: 0.08em;
+            color: var(--ink);
+            background: var(--panel);
+            border: 1px solid var(--edge);
+            border-radius: 0.35rem;
+            padding: 0.4rem 0.7rem;
+            cursor: pointer;
+        }
+
+        @media (hover: hover) {
+            button:hover { border-color: var(--phosphor-dim); color: var(--phosphor); }
+        }
+
+        button:active { transform: translateY(1px); }
+        button.warn { color: var(--amber); border-color: color-mix(in oklch, var(--amber) 40%, var(--edge)); }
+    </style>
+</head>
+<body>
+<div class="app">
+    <header>
+        <h1>lite-profiler <span>// SPP scope channels</span></h1>
+        <a class="xlink" href="index.html">&larr; diagnostic dashboard</a>
+        <div class="run" id="run" data-run="running">STREAMING</div>
+    </header>
+
+    <main>
+        <section class="streams" id="streams">
+            <!-- one .panel.stream per registered SPP stream, built at init from scope.streams() -->
+        </section>
+
+        <aside class="side">
+            <div class="panel">
+                <h2>Memory sink</h2>
+                <div class="sinkbar">
+                    <span>records <b id="s-size">0</b>/<b id="s-cap">0</b></span>
+                    <span>written <b id="s-total">0</b></span>
+                    <span>overflow <b id="s-of">no</b></span>
+                    <span>streams <b id="s-streams">0</b></span>
+                </div>
+            </div>
+
+            <div class="panel" style="flex: 1; min-height: 0; display: flex; flex-direction: column;">
+                <h2>Decoded records <span class="blk">newest first</span></h2>
+                <div class="ticker" id="ticker"></div>
+            </div>
+
+            <div class="panel">
+                <p class="hint">A real <code>createScope()</code> over a <code>createMemorySink()</code>.
+                    Three probes &mdash; <b>frame</b> (0x04), <b>phase</b> (0x09), <b>counter</b> (0x0A)
+                    &mdash; <code>sample()</code> at 10&thinsp;Hz into the shared sink. Each pulse the sink
+                    is decoded back through lite-scope's own <code>readSlab</code>; the <b>tag</b> column is
+                    the record's <code>b</code> slot resolved to a name via <code>scope.stringTable()</code>.
+                    <code>src/</code> imports nothing from lite-scope &mdash; probes couple by protocol.</p>
+            </div>
+        </aside>
+    </main>
+
+    <footer>
+        <div class="ctl">
+            <label for="load">LOAD</label>
+            <input type="range" id="load" min="0" max="20" step="0.5" value="5"/>
+            <span class="count" id="loadVal">5.0 ms</span>
+        </div>
+        <button id="spike" class="warn">INJECT SPIKES</button>
+        <button id="pause">PAUSE</button>
+    </footer>
+</div>
+
+<script type="module">
+    import {
+        Profiler,
+        createFrameProbe, FRAME_TELEMETRY_DESCRIPTOR,
+        createPhaseProbe, PHASE_TELEMETRY_DESCRIPTOR,
+        createCounterProbe, COUNTER_TELEMETRY_DESCRIPTOR
+    } from '@zakkster/lite-profiler';
+    import {
+        createScope, createMemorySink, readSlab,
+        opOf, streamOf, blockOf
+    } from '@zakkster/lite-scope';
+
+    /* ---- cached DOM refs ---- */
+    const $streams = document.getElementById('streams');
+    const $ticker = document.getElementById('ticker');
+    const $run = document.getElementById('run');
+    const $load = document.getElementById('load');
+    const $loadVal = document.getElementById('loadVal');
+    const $spike = document.getElementById('spike');
+    const $pause = document.getElementById('pause');
+    const $sSize = document.getElementById('s-size');
+    const $sCap = document.getElementById('s-cap');
+    const $sTotal = document.getElementById('s-total');
+    const $sOf = document.getElementById('s-of');
+    const $sStreams = document.getElementById('s-streams');
+
+    /* ---- constants ---- */
+    const CAP = 512;
+    const PHASES = ['physics', 'render'];
+    const COUNTERS = ['drawCalls', 'particles'];
+    const SINK_CAP = 512;                 // pow2 overwrite-oldest ring of SPP records
+    const PULSE_MS = 100;                 // 10Hz probe sample + decode + repaint
+    const SPIKE_BURST = 6;
+    const TICKER_MAX = 22;
+    const drawCallsFor = (ms) => 40 + Math.round(ms * 4);
+
+    /* ---- workload profiler ---- */
+    const profiler = new Profiler(CAP, PHASES, COUNTERS);
+    const H_PHYS = profiler.handle('physics');
+    const H_REND = profiler.handle('render');
+    const C_DRAW = profiler.counterHandle('drawCalls');
+    const C_PART = profiler.counterHandle('particles');
+
+    /* ---- the Scope: registry + memory sink + timebase ---- */
+    const sink = createMemorySink(SINK_CAP);
+    const scope = createScope({ sink, epochWallMs: Date.now() });
+    const frameCh = scope.register(FRAME_TELEMETRY_DESCRIPTOR);
+    const phaseCh = scope.register(PHASE_TELEMETRY_DESCRIPTOR);
+    const counterCh = scope.register(COUNTER_TELEMETRY_DESCRIPTOR);
+    const internBridge = (str) => scope.intern(str);
+
+    /* ---- the three probes, DI'd onto the same sink ---- */
+    const frameProbe = createFrameProbe({ profiler, sink: scope.sink, streamId: frameCh.id });
+    const phaseProbe = createPhaseProbe({ profiler, sink: scope.sink, streamId: phaseCh.id, intern: internBridge });
+    const counterProbe = createCounterProbe({ profiler, sink: scope.sink, streamId: counterCh.id, intern: internBridge });
+
+    /* ---- build one panel per registered stream, keyed op rows by (op,b) ---- */
+    const streamViews = new Map();   // streamId -> { block, rowFor(op,b) -> {a,b,tag cells} }
+    function buildStreamPanels() {
+        const list = scope.streams();
+        $sStreams.textContent = String(list.length);
+        for (let i = 0; i < list.length; i++) {
+            const st = list[i];
+            const block = blockOf(st.ops[0].code);
+            const panel = document.createElement('div');
+            panel.className = 'panel stream';
+            panel.dataset.block = String(block);
+            const blkHex = '0x' + block.toString(16).toUpperCase().padStart(2, '0');
+            let html = '<h2>' + st.name + ' <span class="blk">block ' + blkHex +
+                ' &middot; stream ' + st.id + ' &middot; ' + st.unit + ' @ ' + st.hz + 'Hz</span></h2>' +
+                '<table class="ops"><thead><tr><th>op</th><th>code</th>' +
+                '<th style="text-align:right">a</th><th style="text-align:right">b</th><th>tag</th></tr></thead><tbody>';
+            for (let j = 0; j < st.ops.length; j++) {
+                const op = st.ops[j];
+                const code = '0x' + (op.code >>> 0).toString(16).toUpperCase().padStart(4, '0');
+                // one placeholder row per op; phase/counter ops fan out to a row per tag as tags appear
+                html += '<tr data-op="' + op.code + '" data-b="_"><td class="op">' + op.name +
+                    '</td><td class="code">' + code + '</td><td class="a">-</td><td class="b">-</td><td class="tag">-</td></tr>';
+            }
+            html += '</tbody></table>';
+            panel.innerHTML = html;
+            $streams.appendChild(panel);
+            streamViews.set(st.id, { block, tbody: panel.querySelector('tbody') });
+        }
+    }
+
+    // find-or-create the row for a given (stream, op, b). Frame ops keep their single row
+    // (b is not a tag); phase/counter ops get one row per distinct b (the per-tag lane).
+    function rowFor(view, op, b, isTagged) {
+        const key = isTagged ? (op + ':' + b) : String(op);
+        const tbody = view.tbody;
+        let row = tbody.querySelector('tr[data-op="' + op + '"][data-b="' + (isTagged ? b : '_') + '"]');
+        if (!row) {
+            // clone the op's placeholder (first row with this data-op) for a new tag lane
+            const proto = tbody.querySelector('tr[data-op="' + op + '"]');
+            row = proto.cloneNode(true);
+            row.dataset.b = String(b);
+            tbody.appendChild(row);
+        }
+        return row;
+    }
+
+    /* ---- state ---- */
+    let running = true;
+    let loadMs = +$load.value;
+    let spikeLeft = 0;
+    let sinkAcc = 0;
+    let lastPulse = 0;
+    let currentRun = 'running';
+
+    function burn(ms) {
+        if (ms <= 0) return;
+        const end = performance.now() + ms;
+        let acc = sinkAcc;
+        while (performance.now() < end) {
+            for (let i = 0; i < 2000; i++) acc += Math.sqrt(i * 1.000003 + acc) | 0;
+        }
+        sinkAcc = acc & 0xffff;
+    }
+
+    /* ---- 10Hz: sample every probe, then decode the sink and repaint ---- */
+    const tickerRows = [];   // newest-first ring of decoded record strings
+
+    function decodeAndPaint() {
+        // 1) reduce the live profiler windows into SPP records on the shared sink
+        frameProbe.sample();
+        phaseProbe.sample();
+        counterProbe.sample();
+
+        // 2) sink stats (all layout-neutral reads before any DOM write)
+        const size = sink.size();
+        const total = sink.totalWritten();
+        const overflow = sink.overflow();
+        const table = scope.stringTable();
+
+        // 3) decode the whole ring through lite-scope's reference decoder
+        tickerRows.length = 0;
+        readSlab(sink.toSlab(), scope.widthOf, (packed, t, payload, count) => {
+            const op = opOf(packed);
+            const stream = streamOf(packed);
+            const block = blockOf(op);
+            const a = payload[0];
+            const b = count > 1 ? payload[1] : 0;
+            const view = streamViews.get(stream);
+            if (view) {
+                const isTagged = (block === 0x09 || block === 0x0A);   // phase / counter -> b is a tag id
+                const row = rowFor(view, op, b, isTagged);
+                const cells = row.children;
+                cells[2].textContent = Number.isInteger(a) ? String(a) : a.toFixed(2);
+                if (isTagged) {
+                    cells[3].textContent = String(b);
+                    cells[4].textContent = table[b] !== undefined ? table[b] : '?';
+                } else {
+                    cells[3].textContent = count > 1 ? (Number.isInteger(b) ? String(b) : b.toFixed(2)) : '-';
+                    cells[4].textContent = '-';
+                }
+            }
+            // ticker (newest-first): keep the last TICKER_MAX
+            if (tickerRows.length < TICKER_MAX) {
+                const codeHex = '0x' + op.toString(16).toUpperCase().padStart(4, '0');
+                tickerRows.push('<span class="row"><span class="s">s' + stream + '</span> ' +
+                    '<span class="o">' + codeHex + '</span>  a=' + (Number.isInteger(a) ? a : a.toFixed(2)) +
+                    '  b=' + (count > 1 ? b : '-') + '</span>');
+            }
+        });
+
+        // 4) commit DOM writes
+        $sSize.textContent = String(size);
+        $sCap.textContent = String(SINK_CAP);
+        $sTotal.textContent = String(total);
+        $sOf.textContent = overflow > 0 ? String(overflow) : 'no';
+        $ticker.innerHTML = tickerRows.join('');
+    }
+
+    /* ---- main loop ---- */
+    function loop(now) {
+        if (running) {
+            let extra = 0;
+            if (spikeLeft > 0) { extra = 20; spikeLeft--; }
+
+            profiler.beginFrame();
+            profiler.beginAt(H_PHYS);
+            burn(loadMs * 0.6 + extra);
+            profiler.endAt(H_PHYS);
+            profiler.beginAt(H_REND);
+            burn(loadMs * 0.4);
+            profiler.endAt(H_REND);
+            profiler.countAt(C_DRAW, drawCallsFor(loadMs));
+            profiler.countAt(C_PART, 200 + ((now | 0) % 64));   // a wobbling per-frame count
+            profiler.endFrame();
+
+            if (now - lastPulse >= PULSE_MS) {
+                lastPulse = now;
+                decodeAndPaint();
+            }
+        }
+
+        const nextRun = !running ? 'paused' : (spikeLeft > 0 ? 'spike' : 'running');
+        if (nextRun !== currentRun) {
+            currentRun = nextRun;
+            $run.dataset.run = nextRun;
+            $run.textContent = nextRun === 'paused' ? 'PAUSED' : (nextRun === 'spike' ? 'SPIKE BURST' : 'STREAMING');
+        }
+
+        requestAnimationFrame(loop);
+    }
+
+    /* ---- controls ---- */
+    $load.addEventListener('input', () => {
+        loadMs = +$load.value;
+        $loadVal.textContent = loadMs.toFixed(1) + ' ms';
+    });
+    $spike.addEventListener('click', () => { spikeLeft = SPIKE_BURST; });
+    $pause.addEventListener('click', () => {
+        running = !running;
+        $pause.textContent = running ? 'PAUSE' : 'RESUME';
+    });
+
+    /* ---- boot ---- */
+    buildStreamPanels();
+    $loadVal.textContent = loadMs.toFixed(1) + ' ms';
+    requestAnimationFrame((t) => { lastPulse = t; loop(t); });
+</script>
+</body>
+</html>

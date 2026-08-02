@@ -498,9 +498,16 @@
                         <td id="l-cmt">-</td>
                         <td class="delta" id="d-cmt" data-dir="flat">-</td>
                     </tr>
+                    <tr class="divider">
+                        <td class="metric">drawCalls.max<sup>&dagger;</sup></td>
+                        <td id="b-dc">-</td>
+                        <td id="l-dc">-</td>
+                        <td class="delta" id="d-dc" data-dir="flat">-</td>
+                    </tr>
                     </tbody>
                 </table>
                 <p class="fnote">* fps = 1000 / avg of measured frame work (throughput capacity), not display refresh.</p>
+                <p class="fnote">&dagger; counter, deterministic &mdash; gated at <b>0%</b> tolerance (exact ceiling).</p>
             </div>
 
             <div class="panel">
@@ -511,8 +518,10 @@
             <div class="panel">
                 <p class="hint">Let the run settle, hit <b>capture baseline</b> to freeze a
                     <code>summarize()</code> snapshot, then drag <b>load</b> up (or <b>inject spikes</b>).
-                    The gate is <code>checkRegression()</code> at avg/p99 +10%, phase p99 +15%. In CI the
-                    same pair goes through <code>assertNoRegression()</code>.</p>
+                    The gate is <code>checkRegression()</code> at avg/p99 +10%, phase p99 +15%, and
+                    <code>drawCalls.max</code> at <b>0%</b> &mdash; a deterministic counter is an exact
+                    ceiling, so one extra draw call fails. In CI the same pair goes through
+                    <code>assertNoRegression()</code>.</p>
             </div>
         </aside>
     </main>
@@ -578,23 +587,40 @@
             b: document.getElementById('b-cmt'),
             l: document.getElementById('l-cmt'),
             d: document.getElementById('d-cmt')
+        },
+        'counter.drawCalls.max': {
+            b: document.getElementById('b-dc'),
+            l: document.getElementById('l-dc'),
+            d: document.getElementById('d-dc')
         }
     };
 
     /* ---- constants ---- */
     const CAP = 512;
     const PHASES = ['compute', 'commit'];
+    const COUNTERS = ['drawCalls'];       // deterministic per-frame count (a function of load)
     const BUDGET_60 = 1000 / 60;
     const PULSE_MS = 100;                 // ~10Hz UI updates
     const SPIKE_BURST = 8;                // frames per spike injection
-    const TOL = {'frame.avg': 0.10, 'frame.p99': 0.10, 'phase.compute.p99': 0.15, 'phase.commit.p99': 0.15};
+    // counter.drawCalls.max at ZERO tolerance: counters are deterministic, so this is an
+    // EXACT ceiling -- one extra draw call over baseline is a regression, not noise.
+    const TOL = {
+        'frame.avg': 0.10, 'frame.p99': 0.10,
+        'phase.compute.p99': 0.15, 'phase.commit.p99': 0.15,
+        'counter.drawCalls.max': 0
+    };
     const HIGHER = {'frame.fps': true};
     const CLS_ORDER = {steady: 0, spiking: 1, throttled: 2};   // severity for coloring the class delta
 
     /* ---- profiler ---- */
-    const profiler = new Profiler(CAP, PHASES);
+    const profiler = new Profiler(CAP, PHASES, COUNTERS);
     const H_COMPUTE = profiler.handle('compute');
     const H_COMMIT = profiler.handle('commit');
+    const H_DRAW = profiler.counterHandle('drawCalls');
+
+    // scene draw calls scale deterministically with the load setting: same load -> same
+    // count every frame (so baseline max == live max under no change), more load -> more.
+    function drawCallsFor(ms) { return 40 + Math.round(ms * 4); }
 
     /* ---- state ---- */
     let running = true;
@@ -729,12 +755,15 @@
         return 'worse';
     }
 
+    // counters and fps read as whole numbers; ms metrics get 3 decimals
+    const isIntMetric = (path) => HIGHER[path] || path.slice(0, 8) === 'counter.';
+    const fmtVal = (path, v) => isIntMetric(path) ? v.toFixed(0) : fmtMs(v);
+
     function setCell(path, base, live, delta) {
         const c = CELL[path];
         if (!c) return;
-        const isFps = HIGHER[path];
-        c.b.textContent = isFps ? base.toFixed(0) : fmtMs(base);
-        c.l.textContent = isFps ? live.toFixed(0) : fmtMs(live);
+        c.b.textContent = fmtVal(path, base);
+        c.l.textContent = fmtVal(path, live);
         c.d.textContent = fmtPct(delta.pct);
         c.d.dataset.dir = metricDir(path, delta);
     }
@@ -742,6 +771,7 @@
     function readMetric(summary, path) {
         const p = path.split('.');
         if (p[0] === 'frame') return summary.frame[p[1]];
+        if (p[0] === 'counter') return summary.counters[p[1]] ? summary.counters[p[1]][p[2]] : 0;
         return summary.phases[p[1]] ? summary.phases[p[1]][p[2]] : 0;
     }
 
@@ -757,7 +787,7 @@
             for (const path in CELL) {
                 const c = CELL[path];
                 const v = readMetric(live, path);
-                c.l.textContent = (path === 'frame.fps') ? v.toFixed(0) : fmtMs(v);
+                c.l.textContent = fmtVal(path, v);
                 c.b.textContent = '-';
                 c.d.textContent = '-';
                 c.d.dataset.dir = 'flat';
@@ -775,7 +805,8 @@
         for (const path in CELL) {
             const p = path.split('.');
             const d = (p[0] === 'frame') ? diff.frame[p[1]]
-                : (diff.phases[p[1]] && diff.phases[p[1]][p[2]]);
+                : (p[0] === 'counter') ? (diff.counters[p[1]] && diff.counters[p[1]][p[2]])
+                    : (diff.phases[p[1]] && diff.phases[p[1]][p[2]]);
             if (d) setCell(path, d.base, d.cand, d);
         }
 
@@ -892,6 +923,8 @@
             profiler.beginAt(H_COMMIT);
             burn(loadMs * 0.32);
             profiler.endAt(H_COMMIT);
+            // deterministic per-frame draw-call count (flushed at endFrame)
+            profiler.countAt(H_DRAW, drawCallsFor(loadMs));
             profiler.endFrame();
 
             drawScope();

@@ -329,6 +329,23 @@
             background: var(--amber);
         }
 
+        .panel > h2 .unit {
+            text-transform: none;
+            letter-spacing: 0.04em;
+            font-weight: 400;
+            color: var(--phosphor-dim);
+            margin-left: 0.4rem;
+        }
+
+        /* counter rows reuse the .phase layout with a cooler amber track */
+        .ctr .track > i {
+            background: color-mix(in oklch, var(--amber) 45%, var(--edge));
+        }
+
+        .ctr .top .nums b {
+            color: var(--amber);
+        }
+
         .hist {
             display: grid;
             grid-template-columns: repeat(7, 1fr);
@@ -484,6 +501,11 @@
             </div>
 
             <div class="panel">
+                <h2>Counters <span class="unit">per frame</span></h2>
+                <div id="counters"></div>
+            </div>
+
+            <div class="panel">
                 <h2>Frame-time histogram</h2>
                 <div class="hist" id="hist"></div>
             </div>
@@ -493,7 +515,9 @@
                     until frames stay over budget &rarr; <b>throttled</b>. Hit <b>inject GC</b> to scatter
                     sparse hitches with calm phases &rarr; <b>spiking</b>. The <b>unattributed</b> row is
                     frame time no phase claims &mdash; GC pauses live there: phases stay flat while it grows.
-                    Export writes a v2 <code>.litecap</code> with phase tags + run metadata embedded.</p>
+                    The <b>Counters</b> panel tracks per-frame command counts (neighbour interactions,
+                    edge wraps) &mdash; deterministic integers, streamed as <code>counter.last</code>. Export
+                    writes a v3 <code>.litecap</code> with phase tags, counters + run metadata embedded.</p>
             </div>
         </aside>
     </main>
@@ -536,6 +560,7 @@
     const $p99 = document.getElementById('p99');
     const $fmax = document.getElementById('fmax');
     const $phases = document.getElementById('phases');
+    const $counters = document.getElementById('counters');
     const $hist = document.getElementById('hist');
     const $count = document.getElementById('count');
     const $countVal = document.getElementById('countVal');
@@ -550,6 +575,10 @@
     const MAX = 5000;
     const CAPACITY = 512;
     const PHASES = ['spatial', 'steer', 'integrate', 'render'];
+    // Per-frame deterministic counts: neighbour interactions found in steer(), and
+    // toroidal edge wraps in integrate(). Counters accumulate within a frame and
+    // flush one value per counter on endFrame() -- exact integers on the Float32 ring.
+    const COUNTERS = ['neighbors', 'wraps'];
     const TAU = Math.PI * 2;
     const CELL = 44;
     const RADIUS = 38, R2 = RADIUS * RADIUS;
@@ -559,13 +588,18 @@
     const BUDGET_60 = 1000 / 60;
 
     /* ---- profiler + analysis ---- */
-    const profiler = new Profiler(CAPACITY, PHASES);
+    const profiler = new Profiler(CAPACITY, PHASES, COUNTERS);
     const H = {
         spatial: profiler.handle('spatial'),
         steer: profiler.handle('steer'),
         integrate: profiler.handle('integrate'),
         render: profiler.handle('render')
     };
+    const C = {
+        neighbors: profiler.counterHandle('neighbors'),
+        wraps: profiler.counterHandle('wraps')
+    };
+    const cOut = {avg: 0, min: 0, max: 0, p01: 0, p99: 0};
     const hist = new FrameHistogram();
     const stats = new StatsMath(profiler.capacity);
     const fOut = {avg: 0, min: 0, max: 0, p01: 0, p99: 0, p50: 0};
@@ -652,6 +686,27 @@
     const $ghostCur = ghostRow.querySelector('.cur');
     const $ghostBar = ghostRow.querySelector('.track > i');
 
+    /* ---- counter rows: last (now) + avg + max, bar = last as share of max ---- */
+    const counterList = [];
+    for (let i = 0; i < COUNTERS.length; i++) {
+        const tag = COUNTERS[i];
+        const row = document.createElement('div');
+        row.className = 'phase ctr';
+        row.innerHTML =
+            '<div class="top"><span class="name">' + tag + '</span>' +
+            '<span class="nums"><b class="last">0</b> now &middot; avg <span class="avg">0</span>' +
+            ' &middot; max <span class="max">0</span></span></div>' +
+            '<div class="track"><i></i></div>';
+        $counters.appendChild(row);
+        counterList.push({
+            buf: profiler.counterAt(profiler.counterHandle(tag)),   // cached; reset() keeps identity
+            last: row.querySelector('.last'),
+            avg: row.querySelector('.avg'),
+            max: row.querySelector('.max'),
+            bar: row.querySelector('.track > i')
+        });
+    }
+
     /* ---- sizing ---- */
     function resize() {
         DPR = Math.min(window.devicePixelRatio || 1, 2);
@@ -721,8 +776,9 @@
         }
     }
 
-    /* ---- phase: steering forces ---- */
+    /* ---- phase: steering forces (returns neighbour interactions this frame) ---- */
     function steer() {
+        let nbrTotal = 0;
         for (let i = 0; i < active; i++) {
             const xi = px[i], yi = py[i];
             let cx = (xi / CELL) | 0, cy = (yi / CELL) | 0;
@@ -777,11 +833,14 @@
             }
             ax[i] = fx;
             ay[i] = fy;
+            nbrTotal += n;
         }
+        return nbrTotal;
     }
 
-    /* ---- phase: integrate ---- */
+    /* ---- phase: integrate (returns toroidal edge wraps this frame) ---- */
     function integrate() {
+        let wraps = 0;
         for (let i = 0; i < active; i++) {
             vx[i] += ax[i];
             vy[i] += ay[i];
@@ -791,11 +850,12 @@
                 vy[i] = vy[i] / s * MAX_SPEED;
             }
             let nxp = px[i] + vx[i], nyp = py[i] + vy[i];
-            if (nxp < 0) nxp += W; else if (nxp >= W) nxp -= W;
-            if (nyp < 0) nyp += Hh; else if (nyp >= Hh) nyp -= Hh;
+            if (nxp < 0) { nxp += W; wraps++; } else if (nxp >= W) { nxp -= W; wraps++; }
+            if (nyp < 0) { nyp += Hh; wraps++; } else if (nyp >= Hh) { nyp -= Hh; wraps++; }
             px[i] = nxp;
             py[i] = nyp;
         }
+        return wraps;
     }
 
     /* ---- phase: render ---- */
@@ -903,6 +963,19 @@
             ph.row.dataset.hot = pOut.p99 > BUDGET_60 ? '1' : '0';
         }
 
+        // per-counter: last (current frame) + avg + max, bar as share of the window max.
+        // Deterministic integers -> format at 0 decimals; last is ring.peekNewest(), the
+        // exact value the SPP counter probe streams as counter.last.
+        for (let i = 0; i < counterList.length; i++) {
+            const ct = counterList[i];
+            stats.compute(ct.buf, cOut);
+            const last = ct.buf.peekNewest();
+            ct.last.textContent = last.toFixed(0);
+            ct.avg.textContent = cOut.avg.toFixed(0);
+            ct.max.textContent = cOut.max.toFixed(0);
+            ct.bar.style.setProperty('--w', cOut.max > 0 ? Math.min(100, (last / cOut.max) * 100).toFixed(1) : '0');
+        }
+
         // unattributed = frame avg minus the sum of phase avgs (GC, layout, browser work)
         let ghost = fOut.avg - phaseAvgSum;
         if (ghost < 0) ghost = 0;
@@ -943,14 +1016,18 @@
             buildGrid();
             profiler.endAt(H.spatial);
             profiler.beginAt(H.steer);
-            steer();
+            const nbr = steer();
             profiler.endAt(H.steer);
             profiler.beginAt(H.integrate);
-            integrate();
+            const wr = integrate();
             profiler.endAt(H.integrate);
             profiler.beginAt(H.render);
             render();
             profiler.endAt(H.render);
+
+            // per-frame command counts (accumulate; flushed one value each at endFrame)
+            profiler.countAt(C.neighbors, nbr);
+            profiler.countAt(C.wraps, wr);
 
             // GC pause lands in total frame time but NOT in any single phase.
             // Sparse bursts on a jittered schedule: the bimodal (SPIKING)
