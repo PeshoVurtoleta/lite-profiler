@@ -35,3 +35,11 @@ export type {
     PhaseTelemetryDescriptor, PhaseTelemetryOp,
     CreatePhaseProbeOptions, PhaseProbe
 } from './src/phase-probe.js';
+export {
+    createCounterProbe, COUNTER_TELEMETRY_DESCRIPTOR,
+    OP_COUNTER_AVG, OP_COUNTER_MAX, OP_COUNTER_LAST
+} from './src/counter-probe.js';
+export type {
+    CounterTelemetryDescriptor, CounterTelemetryOp,
+    CreateCounterProbeOptions, CounterProbe
+} from './src/counter-probe.js';

@@ -190,6 +190,9 @@ Opt-in, independent of `Profiler`. `recordFrameBoundary(t?)`, `beginSpan`/`endSp
 ### `createPhaseProbe` — SPP phase-telemetry probe
 `createPhaseProbe({ profiler, sink, streamId?, clock?, intern? }) -> { sample(), dispose(), disposed }` is the per-phase sibling: each `sample()` reduces every registered phase ring to avg / p99 / max and emits them on the frozen SPP block `0x0900–0x0902` (`PHASE_TELEMETRY_DESCRIPTOR`), one `phase-telemetry` stream, with the phase's tag id in the record's `b` slot. Zero-GC. See [Phase probe (`createPhaseProbe`)](#phase-probe-createphaseprobe).
 
+### `createCounterProbe` — SPP counter-telemetry probe
+`createCounterProbe({ profiler, sink, streamId?, clock?, intern? }) -> { sample(), dispose(), disposed }` is the per-counter sibling, completing the frame / phase / counter trilogy: each `sample()` reduces every registered counter ring to avg / max / last and emits them on the frozen SPP block `0x0A00–0x0A02` (`COUNTER_TELEMETRY_DESCRIPTOR`), one `counter-telemetry` stream, with the counter's tag id in the record's `b` slot. The trio is avg / max / **last** (not the phase probe's p99): counters are deterministic lower-is-better integers, so `last` (current-frame value) and `max` (gated ceiling) beat a percentile of small integers. Zero-GC. See [Counter probe (`createCounterProbe`)](#counter-probe-createcounterprobe).
+
 ## The `.litecap` format
 
 A flat little-endian buffer. Frames and each phase are stored oldest-first.
@@ -309,6 +312,27 @@ A single `phase-telemetry` stream carries every phase: the phase's **tag id ride
 It's **zero-GC**: the `StatsMath` scratch, the reused `out` object, and the per-phase tag-id table are allocated once and reused, so a sample allocates nothing (proven under `--expose-gc`). A profiler with no registered phases emits nothing. Every emitted value exactly equals `summarize().phases[tag].{avg,p99,max}` — one source of truth.
 
 > **Conformance (v1.6.0).** `test/16-phase-scope-conformance.test.js` registers `PHASE_TELEMETRY_DESCRIPTOR` through a real `createScope`, writes into a real memory sink, and decodes back through lite-scope's `readSlab` — proving block-0x09 stream routing and width-1 records, that each `b` resolves to its tag via the scope string table, and that the decoded avg/p99/max still exactly equal `summarize()`. `src/phase-probe.js` imports nothing from lite-scope (test-only devDependency); couple by protocol, never by dependency.
+
+## Counter probe (`createCounterProbe`)
+
+**`createCounterProbe` streams the per-counter breakdown** on the same Scope, completing the frame / phase / counter trilogy. It reduces every registered counter ring (`drawCalls`, `floatsUploaded`, …) to avg / max / last and emits them on the **frozen SPP block `0x0A00–0x0A02`** (`COUNTER_TELEMETRY_DESCRIPTOR`) — a dedicated block owned by `@zakkster/lite-scope` 1.2.0, produced only here:
+
+```js
+import { Profiler, createCounterProbe } from '@zakkster/lite-profiler';
+
+const profiler = new Profiler(1024, [], ['drawCalls', 'floatsUploaded']);
+// … count(tag, n) during the frame; endFrame() flushes one value per counter …
+
+const probe = createCounterProbe({ profiler, sink, streamId: 7 });
+// on your cadence (the descriptor advertises 10 Hz):
+probe.sample();   // emits 3 records per counter: counter.avg, counter.max, counter.last
+```
+
+The trio is avg / max / **last**, not the phase probe's p99: counters are deterministic, lower-is-better integers, so `last` (the exact current-frame value you display and gate) and `max` (the ceiling you gate at zero tolerance) carry more signal than a percentile of small integers. A single `counter-telemetry` stream carries every counter, the **tag id in the record's `b` slot**; by default `b` is the profiler's own dense counter index (`profiler.counterHandle(tag)` order), or pass `intern` (a `scope.intern` bridge) for scope-interned ids. Interning happens once, at construction — the hot path never interns.
+
+It's **zero-GC**: the `StatsMath` scratch, the reused `out` object, and the per-counter tag-id table are allocated once and reused, so a sample allocates nothing (proven under `--expose-gc`). A profiler with no registered counters emits nothing. Every emitted value exactly equals `summarize().counters[tag].{avg,max,last}` — avg/max via `StatsMath`, last via the ring's newest sample, the same path `summarize()` takes.
+
+> **Conformance (v1.7.0).** `test/18-counter-scope-conformance.test.js` registers `COUNTER_TELEMETRY_DESCRIPTOR` through a real `createScope`, writes into a real memory sink, and decodes back through lite-scope's `readSlab` — proving block-0x0A stream routing and width-1 records, that each `b` resolves to its tag via the scope string table, and that the decoded avg/max/last still exactly equal `summarize()`. `src/counter-probe.js` imports nothing from lite-scope (test-only devDependency); couple by protocol, never by dependency.
 
 ## Capture comparison & regression gating
 

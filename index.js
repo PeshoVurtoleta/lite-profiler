@@ -11,6 +11,10 @@ export {
     createPhaseProbe, PHASE_TELEMETRY_DESCRIPTOR,
     OP_PHASE_AVG, OP_PHASE_P99, OP_PHASE_MAX
 } from './src/phase-probe.js';
+export {
+    createCounterProbe, COUNTER_TELEMETRY_DESCRIPTOR,
+    OP_COUNTER_AVG, OP_COUNTER_MAX, OP_COUNTER_LAST
+} from './src/counter-probe.js';
 export { FrameBudget, budgetMs, isOverBudget } from './src/presets.js';
 export { MeterHud } from './src/hud.js';
 export {

@@ -30,6 +30,10 @@ core; reactive and GPU layers ship separately.
   (block 0x090x, one 'phase-telemetry' stream) streaming per-phase avg/p99/max, phase tag id in
   the record's b slot. PHASE_TELEMETRY_DESCRIPTOR + OP_PHASE_AVG(0x0900)/OP_PHASE_P99(0x0901)/
   OP_PHASE_MAX(0x0902). See v1.6.0.
+- createCounterProbe({ profiler, sink, streamId?, clock?, intern? }) -> SPP counter-telemetry probe
+  (block 0x0A0x, one 'counter-telemetry' stream) streaming per-counter avg/max/last, counter tag id
+  in the record's b slot. COUNTER_TELEMETRY_DESCRIPTOR + OP_COUNTER_AVG(0x0A00)/OP_COUNTER_MAX(0x0A01)/
+  OP_COUNTER_LAST(0x0A02). See v1.7.0.
 - summarize(profiler, meta?) -> CaptureSummary {schema,label,engine,timestamp,
   budgetMs,frameCount,capacity,frame:{avg,min,max,p01,p99,fps,jankRatio,spikeRatio,
   frameClass,bins},phases:{[tag]:{avg,min,max,p01,p99,last,count}},
@@ -62,6 +66,30 @@ core; reactive and GPU layers ship separately.
 ## Dependencies
 @zakkster/lite-ring-buffer, @zakkster/lite-stats-math (analysis),
 @zakkster/lite-canvas-graph (MeterHud). All zero-runtime-dep siblings.
+
+## v1.7.0 — SPP counter-telemetry probe (per-counter lanes on the Scope)
+
+createCounterProbe({ profiler, sink, streamId?, clock?, intern? }) -> { sample(), dispose(),
+disposed }. The per-counter sibling of createFrameProbe/createPhaseProbe -- completes the SPP
+producer trilogy (frame 0x041x / phase 0x090x / counter 0x0A0x). sample() reduces every registered
+counter ring to avg/max/last and writes 3*counterCount records into a DI'd sink on the NEW frozen
+SPP block 0x0A (owned by @zakkster/lite-scope 1.2.0, produced only here). One 'counter-telemetry'
+stream carries all counters; the counter's tag id rides the record's b slot, so one stream demuxes
+into N lanes. b defaults to the profiler's dense counter index (profiler.counterHandle(tag) order);
+pass intern (a scope.intern bridge) for scope-interned ids resolvable via the scope string table.
+Interning is done ONCE at construction -- the hot path never interns.
+COUNTER_TELEMETRY_DESCRIPTOR (unit 'count') + OP_COUNTER_AVG(0x0A00)/OP_COUNTER_MAX(0x0A01)/
+OP_COUNTER_LAST(0x0A02), inlined as protocol facts (couple by protocol, never dependency). WHY
+avg/max/last (not phase's avg/p99/max): counters are deterministic lower-is-better integers, so
+last (current-frame value, displayed and gated) and max (ceiling gated at zero tolerance) beat a
+percentile of small integers. Zero-GC: StatsMath scratch + out object + per-counter tag-id table
+allocated once, reused -- a sample allocates nothing (proven under --expose-gc, 50k samples < 64 KB).
+A profiler with no counters emits nothing. Every value EXACTLY equals
+summarize().counters[tag].{avg,max,last} (avg/max via StatsMath, last via ring.peekNewest() -- the
+same path summarize() takes). Live conformance (test/18) round-trips through a real createScope +
+readSlab, resolving each b back to its tag via scope.stringTable(). lite-scope is a devDependency
+(^1.2.0) imported ONLY by tests; src/ imports nothing from it. 173 tests (+17); no API/behaviour
+change to createFrameProbe/createPhaseProbe or the profiler hot path.
 
 ## v1.6.0 — SPP phase-telemetry probe (per-phase lanes on the Scope)
 

@@ -3,6 +3,61 @@
 All notable changes to `@zakkster/lite-profiler` are documented here.
 The format follows Keep a Changelog; this project adheres to Semantic Versioning.
 
+## [1.7.0] - 2026-08-02
+
+Per-counter telemetry on the Scope. This completes the SPP producer trilogy —
+whole-frame (`createFrameProbe`, block 0x041x), per-phase (`createPhaseProbe`,
+block 0x090x), and now per-counter. `createCounterProbe` reduces every registered
+counter ring to avg / max / last and emits them on the **new frozen SPP block
+0x0A**, one `counter-telemetry` stream, with the counter's tag id riding the
+record's `b` slot. This lands the producer half of the two-package counter
+channel; the protocol home is `@zakkster/lite-scope` 1.2.0 (block 0x0A). `src/`
+still imports nothing from lite-scope. Decisions in
+`decisions/0005-counter-channel.md`.
+
+### Added
+
+- **`createCounterProbe({ profiler, sink, streamId?, clock?, intern? })` →
+  `{ sample(), dispose(), disposed }`** (`src/counter-probe.js`). Each `sample()`
+  emits `3 × counterCount` records, grouped counter-major, into a DI'd sink.
+  Zero-GC: the `StatsMath` scratch, the reused `out` object, and the per-counter
+  tag-id table are allocated once at construction; a sample allocates nothing
+  (proven under `--expose-gc`, 50k samples < 64 KB). A profiler with no counters
+  emits nothing.
+- **`COUNTER_TELEMETRY_DESCRIPTOR`** + **`OP_COUNTER_AVG` (0x0A00) /
+  `OP_COUNTER_MAX` (0x0A01) / `OP_COUNTER_LAST` (0x0A02)** — the frozen block-0x0A
+  opcodes, inlined as PROTOCOL FACTS (probes couple by protocol, never
+  dependency), matching lite-scope's `PROTOCOL.md` and `counterTelemetry` golden
+  vector.
+- **Why avg / max / last (not the phase probe's avg / p99 / max).** Counters are
+  deterministic, lower-is-better integers, so `last` (the exact current-frame
+  value that is displayed and gated) and `max` (the ceiling gated at zero
+  tolerance) matter more than a percentile of small integers. Every value equals
+  `summarize().counters[tag].{avg,max,last}` exactly — avg/max via `StatsMath`,
+  last via `ring.peekNewest()`, the same path `summarize()` takes.
+- **`b` = counter tag id.** By default the profiler's own dense counter index;
+  pass `options.intern` (a `scope.intern` bridge) to carry scope-interned ids
+  instead. Interning happens once, at construction, off the hot path — per the
+  block 0x01 tagId convention.
+- **`test/17-counter-probe.test.js`** (mock collector) — canonical record order,
+  stream routing, `b`-slot ids (index default + intern bridge), intern-once,
+  exact `summarize().counters[tag].{avg,max,last}` parity (with a `last != max`
+  case proving `last` is the newest sample), empty-counter zeros, no-counter
+  no-op, dispose, fail-closed, and the `--expose-gc` alloc gate.
+- **`test/18-counter-scope-conformance.test.js`** (live) — registers the
+  descriptor through a real `createScope`, writes into a real `createMemorySink`,
+  and decodes back through lite-scope's `readSlab`, proving block-0x0A
+  routing/width and that each `b` resolves to its tag via the scope string table,
+  with values still exactly matching `summarize()`.
+- `@zakkster/lite-scope` devDependency bumped to `^1.2.0` (block 0x0A). Imported
+  ONLY by the conformance test; absent from `dependencies` and the tarball.
+
+### Unchanged
+
+- No change to `createFrameProbe`, `createPhaseProbe`, the profiler hot path, or
+  any existing record. Additive: a new stream on a new block. 173 tests (+17);
+  zero-GC gate green.
+
 ## [1.6.0] - 2026-08-01
 
 Per-phase telemetry on the Scope. `createFrameProbe` streams the whole-frame
