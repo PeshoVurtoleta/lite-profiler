@@ -83,14 +83,21 @@ if (hist.classify() === FrameClass.SPIKING) {
 }
 ```
 
-## Live dashboard demo
+## Demos
 
-`demo/index.html` is a single-file diagnostic dashboard in the oscilloscope theme: a boids flock instrumented across four phases (`spatial`, `steer`, `integrate`, `render`) with the full telemetry surface beside it — the classifier verdict, fps, p50 / p99, a per-phase breakdown, and a live frame-time histogram. Drag the boid count up until frames stay over budget (watch it turn **THROTTLED**); hit **inject GC** to scatter sparse hitches while the phase bars stay calm (**SPIKING** — a pause your code didn't cause). Export the session to `.litecap` from the toolbar.
+Four single-file demos in the oscilloscope theme live under `demo/` (cross-linked from each header):
+
+- **`demo/index.html`** — diagnostic dashboard: a boids flock instrumented across four phases (`spatial`, `steer`, `integrate`, `render`) with the full telemetry surface beside it — the classifier verdict, fps, p50 / p99, a per-phase breakdown, a **per-counter panel** (`neighbors` / `wraps`, avg / max / last), and a live frame-time histogram. Drag the boid count up until frames stay over budget (**THROTTLED**); hit **inject GC** to scatter sparse hitches while the phase bars stay calm (**SPIKING** — a pause your code didn't cause). Export to a v3 `.litecap` from the toolbar.
+- **`demo/compare.html`** — capture vs baseline: freeze a `summarize()` snapshot, change the load, and watch `checkRegression()` gate the deltas live — including a deterministic `drawCalls` counter gated at **zero tolerance** (an exact ceiling).
+- **`demo/scope.html`** — SPP scope channels: all three probes (`createFrameProbe` / `createPhaseProbe` / `createCounterProbe`) `sample()` into a live `@zakkster/lite-scope` `createScope` + `createMemorySink`, decoded back through `readSlab` with each record's `b` resolved to a tag via `scope.stringTable()`.
+- **`demo/flame.html`** — timeline flamechart: `TimelineRecorder` span lanes on a shared clock, with **export `.litecap` (v4)** and **export Chrome trace** (`exportChromeTrace`, Perfetto-loadable) from the toolbar.
 
 ```bash
-npm install     # the demo loads the deps from node_modules through an import map
+npm install     # the demos load the deps from node_modules through an import map
 npx serve .     # then open http://localhost:3000/demo/
 ```
+
+Each demo carries a dormant **`#profile`** hook (`@zakkster/lite-layout-profiler`): append `#profile` to the URL and it patches the DOM to flag any forced reflow, reporting `violationCount` to the console. Dev-only — `demo/` never ships (`package.json` `files[]`).
 
 ## The reactive-profiler trap
 
